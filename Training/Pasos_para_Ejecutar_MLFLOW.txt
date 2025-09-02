@@ -1,0 +1,11 @@
+# En un Windows/PowerShell (para ver el dashboard de MLflow):
+python -m mlflow ui --backend-store-uri file:./mlruns --port 5000
+http://127.0.0.1:5000
+
+
+# En otro Windows/PowerShell:
+python run_pipeline.py config.yaml      # Para entrenar, registro automático en MLflow. Cambiar No. secuencia de la corrida
+
+
+# Despues de entrenado el modelo, ejecutar script de evaluación con datos simulados (registra en MLflow)
+python main_eval_injection.py ./df_anom_injection.parquet
