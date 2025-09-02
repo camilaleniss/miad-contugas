@@ -1,0 +1,11 @@
+{
+  "segment": "Comercial",
+  "precision": 0.0015616866215512754,
+  "recall": 0.0594059405940594,
+  "f1": 0.003043367993913264,
+  "accuracy": 0.9933507444256877,
+  "roc_auc": 0.645131749802719,
+  "positives_true": 101,
+  "positives_pred": 3842,
+  "n_eval": 591194
+}

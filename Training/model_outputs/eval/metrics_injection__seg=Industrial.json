@@ -1,0 +1,11 @@
+{
+  "segment": "Industrial",
+  "precision": 0.016091954022988506,
+  "recall": 0.3559322033898305,
+  "f1": 0.030791788856304986,
+  "accuracy": 0.9948410158749981,
+  "roc_auc": 0.7685119143823443,
+  "positives_true": 59,
+  "positives_pred": 1305,
+  "n_eval": 256252
+}

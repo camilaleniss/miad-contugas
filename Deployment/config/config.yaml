@@ -1,0 +1,50 @@
+# === Contugas SSA+Forecast+IF300 ===
+seed: 69069
+
+data:
+  csv_path: ./df_contugas.csv
+  encoding: utf-8-sig
+  date_col: Fecha
+  client_col: Cliente
+  dayfirst: true
+  segment_col: Segmento
+
+mlflow:
+  enabled: true
+  tracking_uri: "./Training"
+  experiment_name: "Contugas-Anomalias"
+  run_name: "run_pipeline_ssa+if500_segm_v05"
+
+ssa:
+  window: 24     # L ≈ 24 (ajusta según tu frecuencia)
+  rank: 8        # nº de componentes a retener para V_filt
+
+regression:
+  # ENet para forecasting de Volumen_{t+1}
+  lags_v: 24      # nº de lags de V_filt en features
+  lags_exo: 12    # nº de lags para P y T
+  alpha: 0.2      # penalización de coeficientes, entre más alto mayor penaliz.
+  l1_ratio: 0.1   # Define la combinación entre L1 (Lasso) y L2 (Ridge) dentro de la penalización (90% L2 y 10% L1).
+  max_iter: 10000
+  tol: 1e-4
+  test_size: 0.4
+
+residuals:
+  roll_window: 30
+
+unsupervised:
+  n_estimators: 500
+  max_samples: "auto"
+  contamination: 0.03
+  fusion: "and"        # "and" (default) | "or"
+  z_threshold: 3.5     # 2.5 | 3.0 | 3.5 (un valor a la vez)
+
+outputs:
+  forecast_model_path: "./model_outputs/enet_forecast.pkl"
+  scaler_path: "./model_outputs/forecast_scaler.pkl"
+  iforest_path: "./model_outputs/iforest_ssa.pkl"
+  flags_csv: "./ctg_anomalias.csv"
+
+training:
+  max_train_samples: 300000
+  suppress_warnings: true

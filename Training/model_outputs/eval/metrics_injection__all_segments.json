@@ -1,0 +1,36 @@
+{
+  "overall": {
+    "precision": 0.005245774237419856,
+    "recall": 0.16875,
+    "f1": 0.010175240248728096,
+    "accuracy": 0.9938013749548644,
+    "roc_auc": 0.6879743306864506,
+    "positives_true": 160,
+    "positives_pred": 5147,
+    "n_eval": 847446
+  },
+  "by_segment": [
+    {
+      "segment": "Comercial",
+      "precision": 0.0015616866215512754,
+      "recall": 0.0594059405940594,
+      "f1": 0.003043367993913264,
+      "accuracy": 0.9933507444256877,
+      "roc_auc": 0.645131749802719,
+      "positives_true": 101,
+      "positives_pred": 3842,
+      "n_eval": 591194
+    },
+    {
+      "segment": "Industrial",
+      "precision": 0.016091954022988506,
+      "recall": 0.3559322033898305,
+      "f1": 0.030791788856304986,
+      "accuracy": 0.9948410158749981,
+      "roc_auc": 0.7685119143823443,
+      "positives_true": 59,
+      "positives_pred": 1305,
+      "n_eval": 256252
+    }
+  ]
+}
