@@ -9,3 +9,7 @@ python run_pipeline.py config.yaml      # Para entrenar, registro automático en
 
 # Despues de entrenado el modelo, ejecutar script de evaluación con datos simulados (registra en MLflow)
 python main_eval_injection.py ./df_anom_injection.parquet
+
+
+# Streamlit execution (instale streamlit primero or requirements.txt)
+ streamlit run src/streamlit_app.py
