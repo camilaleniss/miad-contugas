@@ -1,10 +1,9 @@
 # app.py
-# Contugas - Inference (Desarrollo Productivo)
+# Detección de Anomalía - Contugas (CORJ-2514)
 # - Carga artefactos por segmento: scaler, ENet (forecast), IsolationForest (residuales)
 # - Aplica SSA -> ENet -> residuales -> IF -> fusión (AND/OR)
-# - SIN entrenamiento, SIN gráficos, SOLO inferencia + descarga de resultados
 # - Convención de artefactos: <ruta_base>__seg=<segmento>.pkl
-#   (mismo patrón usado durante el entrenamiento por segmento)
+# - Recibe datos de ETL outputs
 
 import os
 import io
@@ -171,8 +170,13 @@ def load_artifacts_for_segment(base_paths: dict, seg_value: str):
     with open(spaths["iforest"], "rb") as f: iso = pickle.load(f)
     return enet, scaler, iso, spaths
 
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>> FIX DE CACHÉ <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 @st.cache_data(show_spinner=False)
-def run_inference_segment(df_seg: pd.DataFrame, C: dict, enet, scaler, iso):
+def run_inference_segment(df_seg: pd.DataFrame, C: dict, spaths: dict, _enet=None, _scaler=None, _iso=None):
+    """Inferencia cacheada por segmento usando rutas (spaths) como clave hashable.
+       Los modelos sklearn se pasan con nombre iniciado en '_' para que Streamlit no los hashee."""
+    enet, scaler, iso = _enet, _scaler, _iso
+
     # ====== SSA por cliente ======
     L    = int(C["ssa"]["window"]); rank = int(C["ssa"]["rank"])
     rows = []
@@ -335,9 +339,9 @@ if run_btn:
             st.error(str(e))
             continue
 
-        # Inferencia
+        # Inferencia (con FIX de caché)
         try:
-            preds_df = run_inference_segment(df_seg, C, enet, scaler, iso)
+            preds_df = run_inference_segment(df_seg, C, spaths, _enet=enet, _scaler=scaler, _iso=iso)
         except Exception as e:
             st.error(f"Error de inferencia en segmento {seg}: {e}")
             continue
