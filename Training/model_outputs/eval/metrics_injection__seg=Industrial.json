@@ -1,11 +1,16 @@
 {
   "segment": "Industrial",
-  "precision": 0.016091954022988506,
-  "recall": 0.3559322033898305,
-  "f1": 0.030791788856304986,
-  "accuracy": 0.9948410158749981,
-  "roc_auc": 0.7685119143823443,
-  "positives_true": 59,
-  "positives_pred": 1305,
-  "n_eval": 256252
+  "precision": 0.4966181061394381,
+  "recall": 0.4969412989717558,
+  "f1": 0.4967796499902414,
+  "accuracy": 0.969814869737602,
+  "roc_auc": 0.8386757286407515,
+  "positives_true": 7683,
+  "positives_pred": 7688,
+  "n_eval": 256252,
+  "alarm_rate": 0.03000171705976929,
+  "thr_if": 0.7613526006153516,
+  "contamination": 0.03,
+  "fusion": "or",
+  "z_threshold": 1000000000.0
 }

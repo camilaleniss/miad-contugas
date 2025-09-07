@@ -1,11 +1,16 @@
 {
   "segment": "Comercial",
-  "precision": 0.0015616866215512754,
-  "recall": 0.0594059405940594,
-  "f1": 0.003043367993913264,
-  "accuracy": 0.9933507444256877,
-  "roc_auc": 0.645131749802719,
-  "positives_true": 101,
-  "positives_pred": 3842,
-  "n_eval": 591194
+  "precision": 0.22056833558863329,
+  "recall": 0.22058077248378913,
+  "f1": 0.22057455386090044,
+  "accuracy": 0.9532353170025406,
+  "roc_auc": 0.7999356402664319,
+  "positives_true": 17735,
+  "positives_pred": 17736,
+  "n_eval": 591194,
+  "alarm_rate": 0.030000304468583917,
+  "thr_if": 0.6427495597846099,
+  "contamination": 0.03,
+  "fusion": "or",
+  "z_threshold": 1000000000.0
 }
