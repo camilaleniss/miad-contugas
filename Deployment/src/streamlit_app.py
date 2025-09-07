@@ -1,94 +1,127 @@
-# app.py
-# Detección de Anomalía - Contugas (CORJ-2514)
-# - Carga artefactos por segmento: scaler, ENet (forecast), IsolationForest (residuales)
-# - Aplica SSA -> ENet -> residuales -> IF -> fusión (AND/OR)
-# - Convención de artefactos: <ruta_base>__seg=<segmento>.pkl
-# - Recibe datos de ETL outputs
+# -*- coding: utf-8 -*-
+# app_streamlit.py — Contugas (SSA + ENet (poly opcional) + Scaler + IForest en residuales), por segmento
 
 import os
-import io
-import json
-import pickle
+from pathlib import Path
+from datetime import date, timedelta
+
 import numpy as np
 import pandas as pd
 import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
+import joblib
 
-# ===================== CONFIG DEFAULTS =====================
-CFG = {
-    "seed": 69069,
-    "data": {
-        "segment_col": "Segmento",   # <- Debe existir en los datos de entrada
-        "client_col": "Cliente",
-        "date_col": "Fecha",
-        "dayfirst": True
+# --------------------------------------------------------------------------------
+# CONFIG rutas de artefactos: deben existir por segmento con sufijo __seg=<Segmento>.pkl
+# --------------------------------------------------------------------------------
+BASE_DIR = Path(
+    r"E:\Data2\1.Data\2. POSTGRADUATE\11. MAESTRIA_MIAD\ANDES\12_Proyecto_Aplicado_Analítica_de_Datos_(PAAD)\Proyecto_Final_Caso_Contugas\06_Models\Training\model_outputs"
+)
+
+ARTIFACTS_BY_SEG = {
+    "Comercial": {
+        "enet":    BASE_DIR / "enet_forecast__seg=Comercial.pkl",
+        "scaler":  BASE_DIR / "forecast_scaler__seg=Comercial.pkl",
+        "iforest": BASE_DIR / "iforest_ssa__seg=Comercial.pkl",
+        "poly":    BASE_DIR / "poly_features__seg=Comercial.pkl",
     },
-    "paths": {
-        # Se usan como BASE y se les agrega __seg=<seg>.pkl
-        "enet_model": "./model_outputs/enet_forecast.pkl",
-        "scaler": "./model_outputs/forecast_scaler.pkl",
-        "iforest": "./model_outputs/iforest_ssa.pkl",
-        "eval_dir": "./model_outputs/eval"   # para exportar resultados si se desea en disco
+    "Industrial": {
+        "enet":    BASE_DIR / "enet_forecast__seg=Industrial.pkl",
+        "scaler":  BASE_DIR / "forecast_scaler__seg=Industrial.pkl",
+        "iforest": BASE_DIR / "iforest_ssa__seg=Industrial.pkl",
+        "poly":    BASE_DIR / "poly_features__seg=Industrial.pkl",
     },
-    "ssa": {"window": 24, "rank": 8},
-    "regression": {"lags_v": 24, "lags_exo": 12},
-    "residuals": {"roll_window": 30},
-    "unsupervised": {
-        "fusion": "and",        # "and" | "or"
-        "z_threshold": 3.5,
-        "contamination": 0.03
-    }
 }
 
-# ===================== UTILITIES (alineadas a tu pipeline) =====================
-def _normalize_columns(df: pd.DataFrame, client_hint=None, date_hint=None) -> pd.DataFrame:
-    df = df.copy()
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [" ".join([str(x) for x in t if str(x)!='nan']).strip() for t in df.columns.to_list()]
-    df.columns = [str(c).replace('\ufeff','').strip() for c in df.columns]
-    lower = {c.lower(): c for c in df.columns}
-    client_aliases = ["cliente","client","clients","idcliente","id_cliente","customer","usuario","meter","medidor"]
-    date_aliases   = ["fecha","date","fechahora","fecha_hora","datetime","timestamp","fecha hora"]
-    if client_hint: client_aliases = [str(client_hint).lower()] + client_aliases
-    if date_hint:   date_aliases   = [str(date_hint).lower()] + date_aliases
-    mapping = {}
-    for k in client_aliases:
-        if k in lower: mapping[lower[k]] = "Cliente"; break
-    for k in date_aliases:
-        if k in lower: mapping[lower[k]] = "Fecha"; break
-    if mapping: df = df.rename(columns=mapping)
-    if "Cliente" not in df.columns and "CLIENTE" in df.columns:
-        df = df.rename(columns={"CLIENTE":"Cliente"})
-    if "Fecha" not in df.columns and "FECHA" in df.columns:
-        df = df.rename(columns={"FECHA":"Fecha"})
+# Hiperparámetros (coherentes con config del training)
+SSA_WINDOW = 24
+SSA_RANK   = 5
+LAGS_V     = 24
+LAGS_EXO   = 12
+ROLL_Z     = 24
+RES_ROLL   = 12
+IF_CONTAM  = 0.03
+FUSION     = "or"
+Z_DEFAULT  = 1e9
+
+# Subset usado para expansión polinomial opcional en el entrenamiento
+POLY_V_MAX = 6
+POLY_P_MAX = 4
+POLY_T_MAX = 4
+
+st.set_page_config(page_title="Gas Contugas - Dashboard", layout="wide")
+st.title("📊 Dashboard Para Detección de Anomalías")
+st.caption("Históricos, estadísticas, forecasting (SSA+ENet) y anomalías (IForest en residuales) — por segmento")
+
+# --------------------------------------------------------------------------------
+# Utils
+# --------------------------------------------------------------------------------
+def load_base_data():
+    default_path = "df_contugas.csv"
+    if os.path.exists(default_path):
+        df = pd.read_csv(default_path, encoding="utf-8-sig")
+        if "Fecha" in df.columns:
+            df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True)
+        return df
+    return pd.DataFrame(columns=["Fecha","Presion","Temperatura","Volumen","Cliente","Segmento"])
+
+def read_any_file(uploaded_file):
+    name = uploaded_file.name.lower()
+    if name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
+    elif name.endswith((".xlsx", ".xls")):
+        df = pd.read_excel(uploaded_file)
+    else:
+        st.error("Formato no soportado. Sube CSV o Excel.")
+        return None
+    if "Fecha" in df.columns:
+        df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True)
     return df
 
-def _parse_dates_fixed(df: pd.DataFrame, dayfirst=True) -> pd.DataFrame:
-    try:
-        df["Fecha"] = pd.to_datetime(
-            df["Fecha"].astype(str).str.strip(),
-            format="%d-%m-%Y %I:%M:%S %p",
-            errors="raise"
-        )
-    except Exception:
-        df["Fecha"] = pd.to_datetime(
-            df["Fecha"].astype(str).str.strip(),
-            errors="coerce", dayfirst=dayfirst
-        )
-    return df
+def ensure_hourly(dfg: pd.DataFrame) -> pd.DataFrame:
+    dfg = dfg.sort_values("Fecha").set_index("Fecha").asfreq("H")
+    cols = [c for c in ["Presion","Temperatura","Volumen"] if c in dfg.columns]
+    if cols:
+        dfg[cols] = dfg[cols].interpolate(limit_direction="both")
+    dfg = dfg.reset_index()
+    return dfg
 
+@st.cache_resource(show_spinner=False)
+def load_artifacts(segmento: str):
+    paths = ARTIFACTS_BY_SEG[segmento]
+    missing = [k for k,p in paths.items() if not Path(p).exists()]
+    if "poly" in missing:
+        missing.remove("poly")
+    if missing:
+        raise FileNotFoundError(f"Faltan artefactos para {segmento}: {missing}")
+    enet    = joblib.load(paths["enet"])
+    scaler  = joblib.load(paths["scaler"])
+    iforest = joblib.load(paths["iforest"])
+    poly    = joblib.load(paths["poly"]) if Path(paths["poly"]).exists() else None
+    return {"enet": enet, "scaler": scaler, "iforest": iforest, "poly": poly}
+
+# ---------------- SSA ----------------
 def ssa_decompose(series: np.ndarray, L: int):
     N = len(series)
-    if L < 2 or L > N-1:
-        raise ValueError(f"L inválido: {L} para longitud {N}")
+    if L < 2 or L > max(2, N-1):
+        L = max(2, min(L, max(2, N-1)))
     K = N - L + 1
-    X = np.column_stack([series[i:i+L] for i in range(K)])  # L x K
+    if K < 1:
+        U = np.eye(L)
+        s = np.ones(min(L, N))
+        Vt = np.eye(min(L, N))
+        S = np.diag(s)
+        return U, S, Vt
+    X = np.column_stack([series[i:i+L] for i in range(K)])
     U, s, Vt = np.linalg.svd(X, full_matrices=False)
     S = np.diag(s)
     return U, S, Vt
 
 def ssa_reconstruct_series(U, S, Vt, rank: int):
-    U_r = U[:, :rank]; S_r = S[:rank, :rank]; Vt_r = Vt[:rank, :]
-    X_r = U_r @ S_r @ Vt_r  # L x K
+    r = max(1, min(rank, min(S.shape)))
+    U_r = U[:, :r]; S_r = S[:r, :r]; Vt_r = Vt[:r, :]
+    X_r = U_r @ S_r @ Vt_r
     L, K = X_r.shape
     N = L + K - 1
     recon = np.zeros(N); counts = np.zeros(N)
@@ -99,7 +132,8 @@ def ssa_reconstruct_series(U, S, Vt, rank: int):
     recon = recon / np.where(counts == 0, 1, counts)
     return recon
 
-def make_supervised_table(df, lags_v=24, lags_exo=12):
+# ---------------- Tabla supervisada ----------------
+def make_supervised_table(df, lags_v=LAGS_V, lags_exo=LAGS_EXO):
     rows = []
     for cli, g in df.groupby("Cliente"):
         g = g.sort_values("Fecha").reset_index(drop=True)
@@ -116,7 +150,8 @@ def make_supervised_table(df, lags_v=24, lags_exo=12):
     feat_cols = [c for c in Xy.columns if c not in ("Cliente","Fecha","y_next")]
     return Xy, feat_cols
 
-def residual_features(df_pred, roll_window=30):
+# ---------------- Residuales -> features IForest ----------------
+def residual_features(df_pred: pd.DataFrame, roll_window=RES_ROLL):
     g = df_pred.sort_values(["Cliente","Fecha"]).copy()
     parts = []
     for cli, gi in g.groupby("Cliente"):
@@ -138,251 +173,354 @@ def residual_features(df_pred, roll_window=30):
         out["dz_abs"] = np.abs(dz)
         out["dr_abs"] = np.abs(dr)
         parts.append(out)
-    F = pd.concat(parts, ignore_index=True)
+    F = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["Cliente","Fecha","resid","z_abs","r_mean","r_std","dz_abs","dr_abs"])
     return F
 
-def _suffix_from_segment(seg):
-    s = str(seg)
-    for ch in r'\/:*?"<>| ':
-        s = s.replace(ch, "_")
-    return s
-
-def _derive_segment_paths(base_paths, seg_value):
-    seg_suffix = _suffix_from_segment(seg_value)
-    out = {}
-    for k in ("enet_model", "scaler", "iforest"):
-        root, ext = os.path.splitext(base_paths[k])
-        out[k] = f"{root}__seg={seg_suffix}{ext}"
-    return out
-
-# ===================== CACHED LOADERS =====================
-@st.cache_resource(show_spinner=False)
-def load_artifacts_for_segment(base_paths: dict, seg_value: str):
-    spaths = _derive_segment_paths(base_paths, seg_value)
-    missing = [k for k,p in spaths.items() if not os.path.exists(p)]
-    if missing:
-        raise FileNotFoundError(
-            f"No se encuentran artefactos del segmento '{seg_value}'. "
-            f"Faltan: {missing}. Se esperan archivos con patrón '__seg={_suffix_from_segment(seg_value)}.pkl'"
-        )
-    with open(spaths["enet_model"], "rb") as f: enet = pickle.load(f)
-    with open(spaths["scaler"], "rb") as f: scaler = pickle.load(f)
-    with open(spaths["iforest"], "rb") as f: iso = pickle.load(f)
-    return enet, scaler, iso, spaths
-
-# >>>>>>>>>>>>>>>>>>>>>>>>>>>> FIX DE CACHÉ <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-@st.cache_data(show_spinner=False)
-def run_inference_segment(df_seg: pd.DataFrame, C: dict, spaths: dict, _enet=None, _scaler=None, _iso=None):
-    """Inferencia cacheada por segmento usando rutas (spaths) como clave hashable.
-       Los modelos sklearn se pasan con nombre iniciado en '_' para que Streamlit no los hashee."""
-    enet, scaler, iso = _enet, _scaler, _iso
-
-    # ====== SSA por cliente ======
-    L    = int(C["ssa"]["window"]); rank = int(C["ssa"]["rank"])
+# ---------------- Forecast + Anomalías ----------------
+def forecast_and_anomalies(dfg: pd.DataFrame, models: dict, z_threshold: float = Z_DEFAULT):
+    dfg2 = dfg.sort_values(["Cliente","Fecha"]).copy()
     rows = []
-    for cli, g in df_seg.groupby("Cliente"):
+    for cli, g in dfg2.groupby("Cliente"):
         g = g.sort_values("Fecha").copy()
         v = g["Volumen"].astype(float).values
-        if len(v) <= L:
+        if len(v) <= SSA_WINDOW:
             g["V_filt"] = v
         else:
-            U,Sv,Vt = ssa_decompose(v, L=L)
-            v_rec = ssa_reconstruct_series(U, Sv, Vt, rank=rank)[:len(v)]
+            U,S,Vt = ssa_decompose(v, L=SSA_WINDOW)
+            v_rec = ssa_reconstruct_series(U, S, Vt, rank=SSA_RANK)[:len(v)]
             g["V_filt"] = v_rec
         rows.append(g)
-    df_ssa = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+    df_ssa = pd.concat(rows, ignore_index=True) if rows else dfg2.copy()
 
-    # ====== Features ENet ======
-    lags_v   = int(C["regression"]["lags_v"])
-    lags_exo = int(C["regression"]["lags_exo"])
-    Xy, feat_cols = make_supervised_table(df_ssa, lags_v=lags_v, lags_exo=lags_exo)
+    Xy, feat_cols = make_supervised_table(df_ssa, lags_v=LAGS_V, lags_exo=LAGS_EXO)
     if Xy.empty:
-        return pd.DataFrame()  # nada que predecir
+        raise ValueError("Muy pocos datos para construir lags y predecir (necesita al menos max(lags_v,lags_exo)+1 filas por cliente).")
 
-    # ====== Forecast + residuales ======
-    X_all = scaler.transform(Xy[feat_cols].values.astype(float))
-    y_hat = enet.predict(X_all)
+    subs_v = [f"Vf_lag{k}" for k in range(POLY_V_MAX)]
+    subs_p = [f"P_lag{k}"  for k in range(POLY_P_MAX)]
+    subs_t = [f"T_lag{k}"  for k in range(POLY_T_MAX)]
+    subset_cols = [c for c in Xy.columns if c in (subs_v + subs_p + subs_t)]
+
+    X_all_base = Xy[feat_cols].values.astype(float)
+    if models["poly"] is not None and len(subset_cols) > 0:
+        all_subset = Xy[subset_cols].values.astype(float)
+        X_all_poly = models["poly"].transform(all_subset)
+        X_all_concat = np.concatenate([X_all_base, X_all_poly], axis=1)
+    else:
+        X_all_concat = X_all_base
+
+    Xs = models["scaler"].transform(X_all_concat)
+    y_hat_all = models["enet"].predict(Xs)
+
     df_pred = Xy[["Cliente","Fecha","y_next"]].copy().rename(columns={"y_next":"Volumen_next"})
-    df_pred["Volumen_hat"] = y_hat
+    df_pred["Volumen_hat"] = y_hat_all
     df_pred["resid"] = df_pred["Volumen_next"] - df_pred["Volumen_hat"]
 
-    # ====== Features IF ======
-    roll_window = int(C["residuals"]["roll_window"])
-    F = residual_features(df_pred, roll_window=roll_window)
-
-    # ====== Scores IF -> [0,1] ======
+    F = residual_features(df_pred, roll_window=RES_ROLL)
     X_if_all = F[["z_abs","resid","r_mean","r_std","dz_abs","dr_abs"]].astype(float).values
-    dfun  = iso.decision_function(X_if_all)  # alto = normal
-    score = -dfun                            # alto = anómalo
+    dfun = models["iforest"].decision_function(X_if_all)
+    score = -dfun
     smin, smax = float(np.min(score)), float(np.max(score))
     denom = (smax - smin) if (smax - smin) > 1e-9 else 1.0
     proba = (score - smin) / denom
 
-    # ====== Fusión ======
-    fusion = str(C["unsupervised"]["fusion"]).lower()
-    z_thr  = float(C["unsupervised"]["z_threshold"])
-    cont   = float(C["unsupervised"]["contamination"])
-    thr_if = np.quantile(proba, 1.0 - cont)
+    thr_if  = np.quantile(proba, 1.0 - IF_CONTAM)
     flag_if = (proba >= thr_if).astype(int)
-    flag_z  = (F["z_abs"].values >= z_thr).astype(int)
-    Flag_Final = np.where((flag_if + flag_z) > 0, 1, 0) if fusion == "or" else (flag_if & flag_z).astype(int)
+    z_abs   = F["z_abs"].values
+    flag_z  = (z_abs >= z_threshold).astype(int)
+    flag    = np.where((flag_if + flag_z) > 0, 1, 0) if FUSION == "or" else (flag_if & flag_z).astype(int)
 
-    # ====== Ensamble de salida ======
-    out_df = F.copy()
-    out_df["proba"] = proba
-    out_df["Flag_Final"] = Flag_Final
-    out_df = out_df.merge(df_seg[["Cliente","Fecha","Volumen","Presion","Temperatura"]],
-                          on=["Cliente","Fecha"], how="left")
-    out_df = out_df.merge(df_pred[["Cliente","Fecha","Volumen_next","Volumen_hat"]],
-                          on=["Cliente","Fecha"], how="left")
-    return out_df.sort_values(["Cliente","Fecha"]).reset_index(drop=True)
+    out = (
+        F[["Cliente","Fecha","z_abs","resid","r_mean","r_std","dz_abs","dr_abs"]]
+        .assign(Volumen_hat=df_pred["Volumen_hat"].values,
+                Volumen_next=df_pred["Volumen_next"].values,
+                proba_if=proba,
+                Flag_IF=flag_if,
+                Flag_Z=flag_z,
+                Flag_Final=flag)
+        .merge(df_ssa[["Cliente","Fecha","Volumen","Presion","Temperatura","V_filt"]], on=["Cliente","Fecha"], how="left")
+        .sort_values(["Cliente","Fecha"])
+        .reset_index(drop=True)
+    )
+    return out, float(thr_if)
 
-# ===================== STREAMLIT UI =====================
-st.set_page_config(page_title="Contugas - Inference (Dev Prod)", layout="wide")
-st.title("Contugas · Inference por Segmento (Dev Prod)")
+# Severidad (sobre proba_if)
+def categorize_anomaly_if(p, q_leve=0.70, q_media=0.85, q_critica=0.95):
+    if p >= q_critica:
+        return "Crítica"
+    elif p >= q_media:
+        return "Media"
+    elif p >= q_leve:
+        return "Leve"
+    return ""
 
-with st.sidebar:
-    st.header("Configuración")
-    # Opción: cargar YAML externo (opcional). Si no, usa CFG embebido.
-    yaml_file = st.file_uploader("Config YAML (opcional)", type=["yaml", "yml"])
-    C = CFG.copy()
-    if yaml_file is not None:
-        import yaml as _yaml
-        C = {**CFG, **_yaml.safe_load(yaml_file)}
+# --------------------------------------------------------------------------------
+# Sidebar — selección y opciones (keys únicas)
+# --------------------------------------------------------------------------------
+base_df = load_base_data()
+if "Segmento" not in base_df.columns:
+    base_df["Segmento"] = "Comercial"
+if "Fecha" in base_df.columns:
+    base_df["Fecha"] = pd.to_datetime(base_df["Fecha"], errors="coerce", dayfirst=True)
 
-    # Parámetros clave visibles
-    st.markdown("**Artefactos (base):**")
-    enet_base   = st.text_input("ENet base",   value=C["paths"]["enet_model"])
-    scaler_base = st.text_input("Scaler base", value=C["paths"]["scaler"])
-    if_base     = st.text_input("IForest base",value=C["paths"]["iforest"])
-    C["paths"]["enet_model"] = enet_base
-    C["paths"]["scaler"]     = scaler_base
-    C["paths"]["iforest"]    = if_base
+segmentos_base = (
+    sorted(base_df["Segmento"].dropna().astype(str).str.strip().unique().tolist())
+    if ("Segmento" in base_df.columns and not base_df.empty)
+    else ["Comercial", "Industrial"]
+)
 
-    st.markdown("---")
-    seg_col = st.text_input("Columna de Segmento", value=C["data"]["segment_col"])
-    client_col = st.text_input("Columna de Cliente", value=C["data"]["client_col"])
-    date_col = st.text_input("Columna de Fecha", value=C["data"]["date_col"])
-    dayfirst = st.checkbox("Fecha con día primero (dd-mm-YYYY...)", value=C["data"]["dayfirst"])
+st.sidebar.header("Filtros")
+segmento_sel_pre = st.sidebar.selectbox(
+    "Segmento (para cargar artefactos)",
+    options=segmentos_base,
+    index=0,
+    key="seg_pre"
+)
 
-    st.markdown("---")
-    st.markdown("**Hiperparámetros (solo lectura)**")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.write(f"SSA L={C['ssa']['window']}, rank={C['ssa']['rank']}")
-        st.write(f"lags_v={C['regression']['lags_v']}")
-    with col2:
-        st.write(f"lags_exo={C['regression']['lags_exo']}")
-        st.write(f"roll_window={C['residuals']['roll_window']}")
-    with col3:
-        st.write(f"fusion={C['unsupervised']['fusion']}")
-        st.write(f"z_thr={C['unsupervised']['z_threshold']}, cont={C['unsupervised']['contamination']}")
+if ("Fecha" in base_df.columns) and base_df["Fecha"].notna().any():
+    dmin = pd.to_datetime(base_df["Fecha"].min()).date()
+    dmax = pd.to_datetime(base_df["Fecha"].max()).date()
+else:
+    today = date.today()
+    dmin, dmax = today - timedelta(days=30), today
 
-st.markdown("#### Entrada de datos")
-file = st.file_uploader("Sube un CSV o Parquet con columnas mínimas: Segmento, Cliente, Fecha, Volumen, Presion, Temperatura", type=["csv","parquet"])
-run_btn = st.button("Ejecutar inferencia")
+rango = st.sidebar.date_input("Rango de fechas", value=(dmin, dmax), key="rango_fechas")
 
-if run_btn:
-    if file is None:
-        st.error("Sube un archivo primero.")
-        st.stop()
+st.sidebar.header("Detección de anomalías")
+q_leve  = st.sidebar.slider("Severidad Leve IF (≥)",  0.50, 0.999, 0.70, 0.001, format="%.3f", key="q_leve")
+q_media = st.sidebar.slider("Severidad Media IF (≥)", 0.50, 0.999, 0.85, 0.001, format="%.3f", key="q_media")
+q_crit  = st.sidebar.slider("Severidad Crítica IF (≥)",0.50, 0.999, 0.95, 0.001, format="%.3f", key="q_crit")
+if not (q_leve < q_media < q_crit):
+    st.sidebar.warning("Orden requerido: Leve < Media < Crítica.")
 
-    # ====== Lectura de datos ======
-    try:
-        if file.name.lower().endswith(".csv"):
-            df = pd.read_csv(file, encoding="utf-8-sig")
+z_thr = st.sidebar.number_input(
+    "Umbral z (|z| ≥) — usa 1e9 para desactivar",
+    value=float(Z_DEFAULT),
+    step=0.1,
+    format="%.1f",
+    key="z_thr"
+)
+
+# Tolerancia 0–1 (0–100%)
+tol_pct = st.sidebar.slider(
+    "Tolerancia bandas ± (%)",
+    min_value=0.00, max_value=1.00, value=0.80, step=0.01,
+    format="%.2f", key="tol_bandas"
+)
+
+# Controles de visualización de bandas/anomalías
+show_only_out = st.sidebar.checkbox("Mostrar solo puntos fuera de banda", value=False, key="only_oob")
+and_iforest   = st.sidebar.checkbox("Cruzar con IForest/Z (Flag_Final)", value=False, key="and_iforest")
+marker_size   = st.sidebar.slider("Tamaño puntos rojos", min_value=4, max_value=14, value=6, step=1, key="marker_size")
+
+st.sidebar.markdown("---")
+uploaded   = st.sidebar.file_uploader("Subir nuevas mediciones (CSV/Excel)", type=["csv","xlsx","xls"], key="file_up")
+merge_mode = st.sidebar.radio("¿Cómo usar el archivo subido?", ["Reemplazar rango solapado","Añadir/append"], index=0, key="merge_mode")
+
+# --------------------------------------------------------------------------------
+# Merge y selección final
+# --------------------------------------------------------------------------------
+df = base_df.copy()
+if uploaded is not None:
+    new_df = read_any_file(uploaded)
+    if new_df is not None and not new_df.empty:
+        req_cols = {"Fecha","Volumen","Temperatura","Presion","Cliente"}
+        miss = req_cols - set(new_df.columns)
+        if miss:
+            st.error(f"El archivo subido no contiene columnas requeridas: {sorted(miss)}")
         else:
-            df = pd.read_parquet(file)
-    except Exception as e:
-        st.error(f"No se pudo leer el archivo: {e}")
-        st.stop()
+            new_df = new_df.dropna(subset=["Fecha","Volumen","Temperatura","Presion","Cliente"])
+            if "Segmento" not in new_df.columns:
+                new_df["Segmento"] = segmento_sel_pre
+            if merge_mode == "Reemplazar rango solapado":
+                for c, d in new_df.groupby("Cliente"):
+                    mn, mx = d["Fecha"].min(), d["Fecha"].max()
+                    df = df[~((df["Cliente"]==c) & (df["Fecha"].between(mn, mx)))]
+                df = pd.concat([df, new_df], ignore_index=True)
+            else:
+                df = pd.concat([df, new_df], ignore_index=True)
+            df = df.drop_duplicates(subset=["Cliente","Fecha"]).reset_index(drop=True)
 
-    # ====== Normalización de columnas ======
-    df = _normalize_columns(df, client_hint=client_col, date_hint=date_col)
-    # Renombrar a nombres estandar (por si difieren)
-    if client_col in df.columns: df = df.rename(columns={client_col: "Cliente"})
-    if date_col   in df.columns: df = df.rename(columns={date_col: "Fecha"})
+clientes = sorted(df["Cliente"].astype(str).str.strip().dropna().unique().tolist()) if "Cliente" in df.columns else []
+segmentos = sorted(df["Segmento"].astype(str).str.strip().dropna().unique().tolist()) if "Segmento" in df.columns else ["Comercial","Industrial"]
 
-    # Validaciones mínimas
-    req = ["Cliente","Fecha","Volumen","Presion","Temperatura", seg_col]
-    missing = [c for c in req if c not in df.columns]
-    if missing:
-        st.error(f"Faltan columnas requeridas: {missing}")
-        st.stop()
+st.sidebar.header("Selección de datos")
+cliente_sel = st.sidebar.selectbox("Cliente", options=clientes if clientes else ["—"], index=0, key="cliente_sel")
+if not clientes and cliente_sel == "—":
+    cliente_sel = None
 
-    # Tipos y orden
-    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=dayfirst)
-    for c in ["Volumen","Presion","Temperatura"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna(subset=["Cliente","Fecha","Volumen","Presion","Temperatura"]).sort_values(["Cliente","Fecha"]).reset_index(drop=True)
+segmento_sel = st.sidebar.selectbox(
+    "Segmento (para cargar artefactos)",
+    options=segmentos,
+    index=segmentos.index(segmento_sel_pre) if segmento_sel_pre in segmentos else 0,
+    key="seg_final"
+)
 
-    segments = [s for s in df[seg_col].dropna().unique().tolist()]
-    if len(segments) == 0:
-        st.error(f"La columna '{seg_col}' no contiene valores válidos.")
-        st.stop()
+# --------------------------------------------------------------------------------
+# Cuerpo
+# --------------------------------------------------------------------------------
+if not df.empty and cliente_sel:
+    dfg = df[df["Cliente"]==cliente_sel].copy()
 
-    st.success(f"Archivo leído. Filas: {len(df):,}. Segmentos detectados: {len(segments)}.")
+    if "Fecha" in dfg.columns:
+        dfg["Fecha"] = pd.to_datetime(dfg["Fecha"], errors="coerce")
+        dfg = dfg.dropna(subset=["Fecha"])
 
-    # ====== Inferencia por segmento ======
-    all_preds = []
-    for seg in segments:
-        st.markdown(f"### Segmento: `{seg}`")
-        df_seg = df[df[seg_col] == seg].copy()
-        if df_seg.empty:
-            st.info("Sin filas para este segmento.")
-            continue
+    dfg = ensure_hourly(dfg)
+    if isinstance(rango, (list, tuple)) and len(rango)==2 and rango[0] and rango[1]:
+        dfg = dfg[(dfg["Fecha"]>=pd.to_datetime(rango[0])) & (dfg["Fecha"]<=pd.to_datetime(rango[1]))]
 
-        # Carga de artefactos del segmento
-        try:
-            enet, scaler, iso, spaths = load_artifacts_for_segment(C["paths"], seg)
-        except Exception as e:
-            st.error(str(e))
-            continue
-
-        # Inferencia (con FIX de caché)
-        try:
-            preds_df = run_inference_segment(df_seg, C, spaths, _enet=enet, _scaler=scaler, _iso=iso)
-        except Exception as e:
-            st.error(f"Error de inferencia en segmento {seg}: {e}")
-            continue
-
-        if preds_df.empty:
-            st.warning("No se generaron filas de predicción (posiblemente series muy cortas para los lags).")
-            continue
-
-        # KPIs simples
-        anomaly_rate = float(np.mean(preds_df["Flag_Final"])) if len(preds_df) else 0.0
-        st.write(f"Filas evaluadas: {len(preds_df):,} · Alarm rate: {anomaly_rate:.4f}")
-
-        # Vista rápida
-        st.dataframe(preds_df.head(30))
-
-        # Descarga por segmento
-        seg_buf = io.StringIO()
-        preds_df.to_csv(seg_buf, index=False, encoding="utf-8-sig")
-        st.download_button(
-            label=f"Descargar CSV (segmento {seg})",
-            data=seg_buf.getvalue(),
-            file_name=f"preds_inference__seg={_suffix_from_segment(seg)}.csv",
-            mime="text/csv"
-        )
-
-        all_preds.append(preds_df.assign(**{seg_col: seg}))
-
-    # ====== Consolidado global ======
-    if all_preds:
-        all_df = pd.concat(all_preds, ignore_index=True)
-        st.markdown("### Consolidado (todos los segmentos)")
-        st.write(f"Filas totales: {len(all_df):,} · Alarm rate global: {float(np.mean(all_df['Flag_Final'])):.4f}")
-        st.dataframe(all_df.head(30))
-
-        all_buf = io.StringIO()
-        all_df.to_csv(all_buf, index=False, encoding="utf-8-sig")
-        st.download_button(
-            label="Descargar CSV (todos los segmentos)",
-            data=all_buf.getvalue(),
-            file_name="preds_inference__all_segments.csv",
-            mime="text/csv"
-        )
+    if dfg.empty:
+        st.info("No hay datos en el rango seleccionado.")
     else:
-        st.info("No hubo resultados para consolidar.")
+        # Históricos
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.subheader("Volumen (histórico)")
+            st.plotly_chart(
+            px.line(dfg, x="Fecha", y="Volumen", color_discrete_sequence=["seagreen"]),
+            use_container_width=True
+            )
+        with c2:
+            st.subheader("Temperatura (histórico)")
+            st.plotly_chart(
+            px.line(dfg, x="Fecha", y="Temperatura", color_discrete_sequence=["seagreen"]), 
+            use_container_width=True
+            )
+        with c3:
+            st.subheader("Presión (histórico)")
+            st.plotly_chart(
+            px.line(dfg, x="Fecha", y="Presion", color_discrete_sequence=["seagreen"]),
+            use_container_width=True
+            )
+
+        st.subheader("📈 Estadísticas descriptivas (rango filtrado)")
+        stats_cols = [c for c in ["Volumen","Temperatura","Presion"] if c in dfg.columns]
+        if stats_cols:
+            st.dataframe(dfg[stats_cols].describe(percentiles=[0.25,0.5,0.75]).T, use_container_width=True)
+
+        st.subheader("🚨 Detección de anomalías (SSA+ENet → residuales → IForest)")
+        try:
+            seg_for_models = segmento_sel
+            if "Segmento" in dfg.columns:
+                top = dfg["Segmento"].mode()
+                if not top.empty:
+                    seg_for_models = top.iloc[0]
+
+            models = load_artifacts(seg_for_models)
+
+            with st.expander("🔎 Auditoría de artefactos (debug)"):
+                st.write({
+                    "poly.exists": models["poly"] is not None,
+                    "poly.n_features_in_": getattr(models["poly"], "n_features_in_", None) if models["poly"] is not None else None,
+                    "poly.n_output_features_": getattr(models["poly"], "n_output_features_", None) if models["poly"] is not None else None,
+                    "scaler.n_features_in_": getattr(models["scaler"], "n_features_in_", None),
+                    "enet.n_features_in_": getattr(models["enet"], "n_features_in_", None),
+                    "iforest.n_features_in_": getattr(models["iforest"], "n_features_in_", None),
+                })
+                st.caption("Los artefactos deben provenir del mismo entrenamiento (mismo subset/orden).")
+
+            anomalies, thr_if = forecast_and_anomalies(dfg, models, z_threshold=float(z_thr))
+
+            # ---------- Gráfico 1: Pred vs Real ----------
+            df_plot = anomalies.rename(columns={
+                "Volumen_next": "Volumen_real",
+                "Volumen_hat":  "Volumen_pred"
+            })
+            fig = px.line(
+            df_plot.melt(id_vars="Fecha", value_vars=["Volumen_real","Volumen_pred"],
+            var_name="serie", value_name="valor"),
+            x="Fecha", y="valor", color="serie",
+            color_discrete_map={"Volumen_real": "seagreen", "Volumen_pred": "royalblue"},
+            title="Predicción vs Real (horizonte t+1)"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            # ---------- Gráfico 2: Pred vs Real + puntos rojos fuera de banda ----------
+            subs = df_plot.dropna(subset=["Volumen_real","Volumen_pred"]).copy()
+            tol = float(tol_pct)  # 0–1  (ej. 0.10 => ±10%)
+            subs["upper"] = subs["Volumen_pred"] * (1.0 + tol)
+            subs["lower"] = subs["Volumen_pred"] * (1.0 - tol)
+            subs["out_of_band"] = ((subs["Volumen_real"] > subs["upper"]) | (subs["Volumen_real"] < subs["lower"])).astype(int)
+
+            if and_iforest:
+                subs["out_of_band"] = (subs["out_of_band"].astype(bool) & (subs["Flag_Final"] == 1)).astype(int)
+
+            opacity_lines = 0.5 if show_only_out else 1.0
+
+            fig_b = go.Figure()
+            fig_b.add_trace(go.Scatter(x=subs["Fecha"], y=subs["Volumen_real"], name="Volumen_real", mode="lines",
+                                       line=dict(color="seagreen", width=1), opacity=opacity_lines))
+            fig_b.add_trace(go.Scatter(x=subs["Fecha"], y=subs["Volumen_pred"], name="Volumen_pred", mode="lines",
+                                       line=dict(color="seagreen", width=1), opacity=opacity_lines))
+
+            # Solo puntos rojos (sin mostrar las bandas para no saturar el plot)
+            an = subs[subs["out_of_band"] == 1]
+            if not an.empty:
+                fig_b.add_trace(
+                    go.Scatter(
+                        x=an["Fecha"], y=an["Volumen_real"],
+                        mode="markers", name="Fuera de banda",
+                        marker=dict(color="red", size=int(marker_size)),
+                        hovertemplate=("Fecha=%{x}<br>Real=%{y:.3f}"
+                                       "<br>Pred=%{customdata[0]:.3f}"
+                                       "<br>Upper=%{customdata[1]:.3f}"
+                                       "<br>Lower=%{customdata[2]:.3f}<extra></extra>"),
+                        customdata=np.stack([an["Volumen_pred"], an["upper"], an["lower"]], axis=1)
+                    )
+                )
+
+            fig_b.update_layout(title=f"Pred vs Real + Puntos rojos fuera de banda (±{tol*100:.1f}%)")
+            st.plotly_chart(fig_b, use_container_width=True)
+
+            # Exportar CSV de anomalías del gráfico de bandas (dinámicas)
+            if not an.empty:
+                csv_bytes = an[["Cliente", "Fecha", "Volumen_real", "Volumen_pred", "upper", "lower", "Flag_Final", "proba_if"]].to_csv(
+                    index=False, encoding="utf-8-sig"
+                ).encode("utf-8-sig")
+                st.download_button(
+                    "⬇️ Descargar anomalías fuera de banda (CSV)",
+                    data=csv_bytes,
+                    file_name="anomalies_out_of_band.csv",
+                    mime="text/csv",
+                    key="dl_oob_csv"
+                )
+
+            # ---------- Scatter de anomalías IForest/Z (igual que antes) ----------
+            df_plot["Nivel"] = df_plot["proba_if"].apply(lambda p: categorize_anomaly_if(p, q_leve, q_media, q_crit))
+            anom_points = df_plot[df_plot["Flag_Final"] == 1]
+            if not anom_points.empty:
+                sc = px.scatter(
+                    anom_points, x="Fecha", y="Volumen_real",
+                    hover_data=["Nivel","z_abs","proba_if","resid","r_mean","r_std"],
+                    title="Anomalías IForest/Z (puntos)"
+                )
+                st.plotly_chart(sc, use_container_width=True)
+            else:
+                st.info("No se detectaron anomalías según el umbral de IForest/z.")
+
+            # Métricas rápidas
+            subs_err = df_plot.dropna(subset=["Volumen_real","Volumen_pred"]).copy()
+            if not subs_err.empty:
+                err = subs_err["Volumen_real"].values - subs_err["Volumen_pred"].values
+                mae = float(np.mean(np.abs(err)))
+                rmse = float(np.sqrt(np.mean(err**2)))
+                denom = np.maximum(np.abs(subs_err["Volumen_real"].values), 1e-8)
+                mape = float(np.mean(np.abs(err/denom))*100.0)
+                st.caption(f"MAE={mae:,.3f} | RMSE={rmse:,.3f} | MAPE={mape:,.2f}%  (t+1)")
+
+            st.dataframe(df_plot.tail(300), use_container_width=True)
+            st.caption(
+                f"IForest: percentil **{1.0-IF_CONTAM:.3f}** ⇒ score ≥ **{thr_if:.3f}** (Flag_IF=1). "
+                f"Severidad: Leve ≥ {q_leve:.3f}, Media ≥ {q_media:.3f}, Crítica ≥ {q_crit:.3f}. "
+                f"(‘proba_if’ ∈ [0,1], mayor ⇒ más anómalo)"
+            )
+
+        except FileNotFoundError as e:
+            st.error(str(e))
+        except Exception as e:
+            st.exception(e)
+
+# Footer
+st.caption("Artefactos y lógica replican el pipeline SSA→lags→(poly subset)→Scaler→ENet→residuales→IForest. "
+           "Usa datos con columnas: Fecha, Volumen, Presion, Temperatura, Cliente, Segmento.")
