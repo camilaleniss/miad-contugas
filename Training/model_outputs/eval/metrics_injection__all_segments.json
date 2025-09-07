@@ -1,36 +1,47 @@
 {
   "overall": {
-    "precision": 0.005245774237419856,
-    "recall": 0.16875,
-    "f1": 0.010175240248728096,
-    "accuracy": 0.9938013749548644,
-    "roc_auc": 0.6879743306864506,
-    "positives_true": 160,
-    "positives_pred": 5147,
-    "n_eval": 847446
+    "precision": 0.3040434235368156,
+    "recall": 0.30411519395703834,
+    "f1": 0.30407930451201765,
+    "accuracy": 0.9582486671717136,
+    "roc_auc": 0.8015263802826975,
+    "positives_true": 25418,
+    "positives_pred": 25424,
+    "n_eval": 847446,
+    "alarm_rate": 0.03000073161003769
   },
   "by_segment": [
     {
       "segment": "Comercial",
-      "precision": 0.0015616866215512754,
-      "recall": 0.0594059405940594,
-      "f1": 0.003043367993913264,
-      "accuracy": 0.9933507444256877,
-      "roc_auc": 0.645131749802719,
-      "positives_true": 101,
-      "positives_pred": 3842,
-      "n_eval": 591194
+      "precision": 0.22056833558863329,
+      "recall": 0.22058077248378913,
+      "f1": 0.22057455386090044,
+      "accuracy": 0.9532353170025406,
+      "roc_auc": 0.7999356402664319,
+      "positives_true": 17735,
+      "positives_pred": 17736,
+      "n_eval": 591194,
+      "alarm_rate": 0.030000304468583917,
+      "thr_if": 0.6427495597846099,
+      "contamination": 0.03,
+      "fusion": "or",
+      "z_threshold": 1000000000.0
     },
     {
       "segment": "Industrial",
-      "precision": 0.016091954022988506,
-      "recall": 0.3559322033898305,
-      "f1": 0.030791788856304986,
-      "accuracy": 0.9948410158749981,
-      "roc_auc": 0.7685119143823443,
-      "positives_true": 59,
-      "positives_pred": 1305,
-      "n_eval": 256252
+      "precision": 0.4966181061394381,
+      "recall": 0.4969412989717558,
+      "f1": 0.4967796499902414,
+      "accuracy": 0.969814869737602,
+      "roc_auc": 0.8386757286407515,
+      "positives_true": 7683,
+      "positives_pred": 7688,
+      "n_eval": 256252,
+      "alarm_rate": 0.03000171705976929,
+      "thr_if": 0.7613526006153516,
+      "contamination": 0.03,
+      "fusion": "or",
+      "z_threshold": 1000000000.0
     }
   ]
 }
