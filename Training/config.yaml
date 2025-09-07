@@ -10,14 +10,14 @@ data:
   segment_col: Segmento
 
 mlflow:
-  enabled: true
-  tracking_uri: "./Training"
+  enabled: true    # false
+  tracking_uri: "file:./mlruns"
   experiment_name: "Contugas-Anomalias"
-  run_name: "run_pipeline_ssa+if500_segm_v05"
+  run_name: "ssa+enetpoly2+if300_Release01"
 
 ssa:
-  window: 24     # L ≈ 24 (ajusta según tu frecuencia)
-  rank: 8        # nº de componentes a retener para V_filt
+  window: 24     # L ≈ 24 (un día de operación)
+  rank: 5        # nº de componentes a retener para V_filt (99% Varianza explicada)
 
 regression:
   # ENet para forecasting de Volumen_{t+1}
@@ -28,16 +28,18 @@ regression:
   max_iter: 10000
   tol: 1e-4
   test_size: 0.4
+  scaler: robust        # ← usa "standard" o "robust"
+  poly_degree: 2
 
 residuals:
-  roll_window: 30
+  roll_window: 12
 
 unsupervised:
-  n_estimators: 500
+  n_estimators: 300
   max_samples: "auto"
   contamination: 0.03
-  fusion: "and"        # "and" (default) | "or"
-  z_threshold: 3.5     # 2.5 | 3.0 | 3.5 (un valor a la vez)
+  fusion: "or"         # "and" (default) | "or"
+  z_threshold: 1e9     # 2.5 | 3.0 | 3.5 (un valor a la vez)  | 1e9 (infinito, solo IF pasa)
 
 outputs:
   forecast_model_path: "./model_outputs/enet_forecast.pkl"
