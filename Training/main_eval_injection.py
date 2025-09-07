@@ -1,66 +1,54 @@
+
 # -*- coding: utf-8 -*-
 """
-Evaluación (inyección de anomalías) POR SEGMENTO.
-- Carga df_anom_injection.parquet con etiquetas inyectadas (por fila).
-- Para cada segmento (col data.segment_col, default="Segmento"):
-    * Aplica SSA por cliente -> ENet forecast (usa scaler/ENet del segmento)
-    * Construye residuales y features -> usa IForest del segmento
-    * Fusiona con z-score según config (and|or)
-    * Alinea y_true en t+1 con shift(-1) por cliente (FIX corrimiento)
-    * Calcula métricas (precision, recall, f1, accuracy, ROC/AUC) por segmento
-    * Exporta CSV de preds y JSON de métricas por segmento
-- Además, compila métricas y preds "globales" (unión de segmentos) en archivos combinados.
-
-Requisitos: artefactos por segmento generados por el run de entrenamiento por segmento:
-  model_outputs/enet_forecast__seg=<seg>.pkl
+Evaluación por segmento compatible con ENet o MLP y (opcional) PolynomialFeatures.
+Lee artefactos por segmento:
+  model_outputs/enet_forecast__seg=<seg>.pkl        (ENet o MLP)
   model_outputs/forecast_scaler__seg=<seg>.pkl
   model_outputs/iforest_ssa__seg=<seg>.pkl
+  model_outputs/poly_features__seg=<seg>.pkl        (opcional)
 
-Config: la misma de run_pipeline.py
+Genera métricas por segmento y globales (precision/recall/f1/accuracy/roc_auc), además de alarm_rate y thr_if.
 """
 
 import os, sys, json, pickle
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-
 from typing import Dict, Any, Tuple
-from sklearn.metrics import (
-    precision_score, recall_score, f1_score, accuracy_score,
-    roc_auc_score, roc_curve
-)
+from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score, roc_auc_score, roc_curve
 
-# ---- MLflow opcional (respeta tu config) ----
 try:
     import mlflow
 except Exception:
     mlflow = None
 
-# ------------------------- CONFIG EMBEBIDA (se puede sobreescribir vía YAML externo si prefieres) -------------------------
+# ------------------------------ CONFIG -------------------------------
 cfg = {
     "seed": 69069,
-    "data": {
-        "segment_col": "Segmento",          # <--- importante
-    },
+    "data": {"segment_col": "Segmento"},
     "paths": {
         "parquet_default": "./df_anom_injection.parquet",
-        "enet_model": "./model_outputs/enet_forecast.pkl",          # se usará como base para derivar __seg=<seg>.pkl
-        "scaler": "./model_outputs/forecast_scaler.pkl",            # idem
-        "iforest": "./model_outputs/iforest_ssa.pkl",               # idem
+        "enet_model": "./model_outputs/enet_forecast.pkl",
+        "scaler": "./model_outputs/forecast_scaler.pkl",
+        "iforest": "./model_outputs/iforest_ssa.pkl",
+        "poly": "./model_outputs/poly_features.pkl",
         "plots_dir": "./model_outputs/plots",
         "eval_dir": "./model_outputs/eval",
     },
-    "ssa": {"window": 24, "rank": 8},
-    "regression": {"lags_v": 24, "lags_exo": 12},
-    "residuals": {"roll_window": 30},
-    "unsupervised": {
-        "fusion": "and",        # "and" | "or"
-        "z_threshold": 3.0,
-        "contamination": 0.03
+    "ssa": {"window": 24, "rank": 5},
+    "regression": {
+        "lags_v": 24,
+        "lags_exo": 12,
+        "poly_v_max_lag": 6,
+        "poly_p_max_lag": 4,
+        "poly_t_max_lag": 4,
     },
+    "residuals": {"roll_window": 12},
+    "unsupervised": {"fusion": "or", "z_threshold": 1e9, "contamination": 0.03},
     "mlflow": {
         "enabled": True,
-        "tracking_uri": os.environ.get("MLFLOW_TRACKING_URI", "file:./mlruns"),
+        "tracking_uri": "file:./mlruns",
         "experiment_name": "Contugas-Anomalias",
         "run_name": "eval_injection_by_segment"
     }
@@ -71,7 +59,7 @@ def _normalize_columns(df: pd.DataFrame, client_hint=None, date_hint=None) -> pd
     df = df.copy()
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [" ".join([str(x) for x in t if str(x)!='nan']).strip() for t in df.columns.to_list()]
-    df.columns = [str(c).replace('\ufeff','').strip() for c in df.columns]
+    df.columns = [str(c).replace('\\ufeff','').strip() for c in df.columns]
     lower = {c.lower(): c for c in df.columns}
     client_aliases = ["cliente","client","clients","idcliente","id_cliente","customer","usuario","meter","medidor"]
     date_aliases   = ["fecha","date","fechahora","fecha_hora","datetime","timestamp","fecha hora"]
@@ -91,16 +79,11 @@ def _normalize_columns(df: pd.DataFrame, client_hint=None, date_hint=None) -> pd
 
 def _parse_dates_fixed(df: pd.DataFrame) -> pd.DataFrame:
     try:
-        df["Fecha"] = pd.to_datetime(
-            df["Fecha"].astype(str).str.strip(),
-            format="%d-%m-%Y %I:%M:%S %p",
-            errors="raise"
-        )
+        df["Fecha"] = pd.to_datetime(df["Fecha"].astype(str).str.strip(),
+                                     format="%d-%m-%Y %I:%M:%S %p", errors="raise")
     except Exception:
-        df["Fecha"] = pd.to_datetime(
-            df["Fecha"].astype(str).str.strip(),
-            errors="coerce", dayfirst=True
-        )
+        df["Fecha"] = pd.to_datetime(df["Fecha"].astype(str).str.strip(),
+                                     errors="coerce", dayfirst=True)
     return df
 
 def ssa_decompose(series: np.ndarray, L: int):
@@ -132,11 +115,7 @@ def make_supervised_table(df, lags_v=24, lags_exo=12):
         g = g.sort_values("Fecha").reset_index(drop=True)
         maxlag = max(lags_v, lags_exo)
         for t in range(maxlag, len(g)-1):
-            row = {
-                "Cliente": cli,
-                "Fecha": g.loc[t, "Fecha"],
-                "y_next": g.loc[t+1, "Volumen"],
-            }
+            row = {"Cliente": cli, "Fecha": g.loc[t, "Fecha"], "y_next": g.loc[t+1, "Volumen"]}
             for k in range(lags_v):
                 row[f"Vf_lag{k}"] = g.loc[t-k, "V_filt"]
             for k in range(lags_exo):
@@ -147,7 +126,7 @@ def make_supervised_table(df, lags_v=24, lags_exo=12):
     feat_cols = [c for c in Xy.columns if c not in ("Cliente","Fecha","y_next")]
     return Xy, feat_cols
 
-def residual_features(df_pred, roll_window=30):
+def residual_features(df_pred, roll_window=24):
     g = df_pred.sort_values(["Cliente","Fecha"]).copy()
     parts = []
     for cli, gi in g.groupby("Cliente"):
@@ -185,16 +164,15 @@ def _find_label_column(df: pd.DataFrame):
             return c
     raise KeyError("No se encontró columna de etiqueta (p.ej. 'label', 'is_anom').")
 
-def _suffix_from_segment(seg: Any) -> str:
+def _suffix_from_segment(seg) -> str:
     s = str(seg)
     for ch in r'\/:*?"<>| ':
         s = s.replace(ch, "_")
     return s
 
 def _derive_segment_paths(base_paths: Dict[str,str], seg_suffix: str) -> Dict[str,str]:
-    # Deriva nombres de artefactos por segmento usando el patrón __seg=<seg>.pkl
     out = {}
-    for k in ("enet_model","scaler","iforest"):
+    for k in ("enet_model","scaler","iforest","poly"):
         p = base_paths[k]
         root, ext = os.path.splitext(p)
         out[k] = f"{root}__seg={seg_suffix}{ext}"
@@ -202,25 +180,27 @@ def _derive_segment_paths(base_paths: Dict[str,str], seg_suffix: str) -> Dict[st
 
 # ------------------------- Evaluación por segmento -------------------------
 def eval_segment(df_seg: pd.DataFrame, seg_value, C: Dict[str,Any]) -> Tuple[pd.DataFrame, Dict[str,float], str]:
-    """
-    Evalúa un segmento, devolviendo:
-      - preds_df (con proba, Flag_Final, y columnas de contexto)
-      - metrics (precision/recall/f1/accuracy/roc_auc/positives_true/positives_pred/n_eval)
-      - path del PNG de curva ROC (o None)
-    """
     paths = C["paths"]
     seg_suffix = _suffix_from_segment(seg_value)
     spaths = _derive_segment_paths(paths, seg_suffix)
 
-    # Cargar artefactos del segmento
+    # Artefactos
     for key in ("enet_model","scaler","iforest"):
         if not os.path.exists(spaths[key]):
-            raise FileNotFoundError(f"[{seg_value}] No encuentro artefacto: {spaths[key]}")
-    with open(spaths["enet_model"], "rb") as f: enet = pickle.load(f)
+            raise FileNotFoundError(f"[{seg_value}] Falta artefacto: {spaths[key]}")
+    with open(spaths["enet_model"], "rb") as f: forecast_model = pickle.load(f)
     with open(spaths["scaler"], "rb") as f: scaler = pickle.load(f)
     with open(spaths["iforest"], "rb") as f: iso = pickle.load(f)
 
-    # SSA por cliente en el segmento
+    poly = None
+    if os.path.exists(spaths["poly"]):
+        try:
+            with open(spaths["poly"], "rb") as f:
+                poly = pickle.load(f)
+        except Exception as e:
+            print(f"[WARN] No se cargó poly en {seg_value}: {e}")
+
+    # SSA por cliente
     L    = int(C["ssa"]["window"]); rank = int(C["ssa"]["rank"])
     rows = []
     for cli, g in df_seg.groupby("Cliente"):
@@ -235,26 +215,46 @@ def eval_segment(df_seg: pd.DataFrame, seg_value, C: Dict[str,Any]) -> Tuple[pd.
         rows.append(g)
     df_ssa = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
 
-    # Features supervisadas (mismos lags que en entrenamiento)
-    lags_v   = int(C["regression"]["lags_v"])
-    lags_exo = int(C["regression"]["lags_exo"])
+    # Tabla supervisada
+    R = C["regression"]
+    lags_v   = int(R["lags_v"]);  lags_exo = int(R["lags_exo"])
     Xy, feat_cols = make_supervised_table(df_ssa, lags_v=lags_v, lags_exo=lags_exo)
 
-    # Predicción ENet -> residuales
-    X_all   = scaler.transform(Xy[feat_cols].values.astype(float))
-    y_hat   = enet.predict(X_all)
+    X_base = Xy[feat_cols].values.astype(float)
+    X_concat = X_base
+
+    # Aplicar Poly si existe
+    if poly is not None:
+        v_max = int(R.get("poly_v_max_lag", 6)); p_max = int(R.get("poly_p_max_lag", 4)); t_max = int(R.get("poly_t_max_lag", 4))
+        subs_v = [f"Vf_lag{k}" for k in range(v_max)]
+        subs_p = [f"P_lag{k}"  for k in range(p_max)]
+        subs_t = [f"T_lag{k}"  for k in range(t_max)]
+        subset_cols = [c for c in Xy.columns if c in (subs_v + subs_p + subs_t)]
+        try:
+            X_sub = Xy[subset_cols].values.astype(float)
+            n_in = getattr(poly, "n_input_features_", None)
+            if (n_in is not None) and (X_sub.shape[1] != int(n_in)):
+                print(f"[WARN] Poly n_input_features_={n_in} != subset={X_sub.shape[1]} en {seg_value}. Omitiendo Poly.")
+            else:
+                X_poly = poly.transform(X_sub)
+                X_concat = np.concatenate([X_base, X_poly], axis=1)
+        except Exception as e:
+            print(f"[WARN] Fallo Poly en {seg_value}: {e}")
+
+    # Forecast -> residuales
+    X_all = scaler.transform(X_concat)
+    y_hat = forecast_model.predict(X_all)
     df_pred = Xy[["Cliente","Fecha","y_next"]].copy().rename(columns={"y_next":"Volumen_next"})
     df_pred["Volumen_hat"] = y_hat
     df_pred["resid"] = df_pred["Volumen_next"] - df_pred["Volumen_hat"]
 
     # Residuales -> features IF
-    roll_window = int(C["residuals"]["roll_window"])
-    F = residual_features(df_pred, roll_window=roll_window)
+    F = residual_features(df_pred, roll_window=int(C["residuals"]["roll_window"]))
 
     # Scores IF -> [0,1]
     X_if_all = F[["z_abs","resid","r_mean","r_std","dz_abs","dr_abs"]].astype(float).values
-    dfun  = iso.decision_function(X_if_all)    # alto = normal
-    score = -dfun                              # alto = anómalo
+    dfun  = iso.decision_function(X_if_all)           # alto = normal
+    score = -dfun                                     # alto = anómalo
     smin, smax = float(np.min(score)), float(np.max(score))
     denom = (smax - smin) if (smax - smin) > 1e-9 else 1.0
     proba = (score - smin) / denom
@@ -267,18 +267,13 @@ def eval_segment(df_seg: pd.DataFrame, seg_value, C: Dict[str,Any]) -> Tuple[pd.
     flag_z  = (F["z_abs"].values >= z_thr).astype(int)
     Flag_Final = np.where((flag_if + flag_z) > 0, 1, 0) if fusion == "or" else (flag_if & flag_z).astype(int)
 
-    # ---- FIX corrimiento: y_true alineada a t+1 por cliente ----
+    # y_true alineada a t+1 por cliente
     label_col = _find_label_column(df_seg)
-    df_lbl = (
-        df_seg[["Cliente","Fecha",label_col]].copy()
-              .sort_values(["Cliente","Fecha"])
-    )
-    df_lbl["label_shiftm1"] = df_lbl.groupby("Cliente")[label_col].shift(-1)  # verdad t+1 pegada a Fecha t
+    df_lbl = df_seg[["Cliente","Fecha",label_col]].copy().sort_values(["Cliente","Fecha"])
+    df_lbl["label_shiftm1"] = df_lbl.groupby("Cliente")[label_col].shift(-1)
 
-    eval_df = F[["Cliente","Fecha"]].merge(
-        df_lbl[["Cliente","Fecha","label_shiftm1"]],
-        on=["Cliente","Fecha"], how="left"
-    )
+    eval_df = F[["Cliente","Fecha"]].merge(df_lbl[["Cliente","Fecha","label_shiftm1"]],
+                                           on=["Cliente","Fecha"], how="left")
     y_true = eval_df["label_shiftm1"].fillna(0).astype(int).values
     y_pred = Flag_Final.astype(int)
 
@@ -293,6 +288,7 @@ def eval_segment(df_seg: pd.DataFrame, seg_value, C: Dict[str,Any]) -> Tuple[pd.
     recall    = recall_score(y_true, y_pred, zero_division=0)
     f1        = f1_score(y_true, y_pred, zero_division=0)
     accuracy  = accuracy_score(y_true, y_pred)
+    alarm_rate = float(np.mean(Flag_Final)) if len(Flag_Final) else 0.0
 
     metrics = {
         "segment": str(seg_value),
@@ -304,9 +300,13 @@ def eval_segment(df_seg: pd.DataFrame, seg_value, C: Dict[str,Any]) -> Tuple[pd.
         "positives_true": int(np.sum(y_true)),
         "positives_pred": int(np.sum(y_pred)),
         "n_eval": int(len(y_true)),
+        "alarm_rate": float(alarm_rate),
+        "thr_if": float(thr_if),
+        "contamination": float(cont),
+        "fusion": fusion,
+        "z_threshold": float(z_thr),
     }
 
-    # Curva ROC del segmento
     os.makedirs(C["paths"]["plots_dir"], exist_ok=True)
     roc_path = None
     if fpr is not None and tpr is not None:
@@ -316,25 +316,17 @@ def eval_segment(df_seg: pd.DataFrame, seg_value, C: Dict[str,Any]) -> Tuple[pd.
         plt.xlabel("False Positive Rate")
         plt.ylabel("True Positive Rate (Recall)")
         plt.title(f"Curva ROC - Inyección ({seg_value})")
-        plt.grid(True, alpha=0.3)
-        plt.legend(loc="lower right")
-        plt.tight_layout()
+        plt.grid(True, alpha=0.3); plt.legend(loc="lower right"); plt.tight_layout()
         roc_path = os.path.join(C["paths"]["plots_dir"], f"roc_injection__seg={_suffix_from_segment(seg_value)}.png")
-        plt.savefig(roc_path, dpi=140)
-        plt.close()
+        plt.savefig(roc_path, dpi=140); plt.close()
 
-    # Ensamble de salida del segmento
     out_df = F.copy()
     out_df["proba"] = proba
     out_df["Flag_Final"] = Flag_Final
-    out_df = out_df.merge(
-        df_lbl[["Cliente","Fecha","label_shiftm1"]],
-        on=["Cliente","Fecha"], how="left"
-    ).rename(columns={"label_shiftm1":"label_next"})
-    out_df = out_df.merge(df_seg[["Cliente","Fecha","Volumen","Presion","Temperatura"]],
-                          on=["Cliente","Fecha"], how="left")
-    out_df = out_df.merge(df_pred[["Cliente","Fecha","Volumen_next","Volumen_hat"]],
-                          on=["Cliente","Fecha"], how="left")
+    out_df = out_df.merge(df_lbl[["Cliente","Fecha","label_shiftm1"]], on=["Cliente","Fecha"], how="left") \
+                   .rename(columns={"label_shiftm1":"label_next"})
+    out_df = out_df.merge(df_seg[["Cliente","Fecha","Volumen","Presion","Temperatura"]], on=["Cliente","Fecha"], how="left")
+    out_df = out_df.merge(df_pred[["Cliente","Fecha","Volumen_next","Volumen_hat"]], on=["Cliente","Fecha"], how="left")
     out_df["Segmento"] = seg_value
 
     return out_df, metrics, roc_path
@@ -350,9 +342,8 @@ def main(parquet_path=None):
     if not os.path.exists(parquet_path):
         raise FileNotFoundError(f"No encuentro el parquet: {parquet_path}")
 
-    # MLflow
     mlconf = cfg.get("mlflow", {})
-    ml_enabled = bool(mlconf.get("enabled", True) and (mlflow is not None))
+    ml_enabled = bool(mlconf.get("enabled", False) and (mlflow is not None))
     if ml_enabled:
         mlflow.set_tracking_uri(mlconf.get("tracking_uri"))
         mlflow.set_experiment(mlconf.get("experiment_name", "Contugas-Anomalias"))
@@ -360,10 +351,8 @@ def main(parquet_path=None):
         mlflow.set_tag("phase", "evaluation")
         mlflow.set_tag("eval_type", "injection_parquet_by_segment")
 
-    # Data
     df = pd.read_parquet(parquet_path, engine="pyarrow")
-    df = _normalize_columns(df)
-    df = _parse_dates_fixed(df)
+    df = _normalize_columns(df); df = _parse_dates_fixed(df)
 
     req = ["Cliente","Fecha","Volumen","Presion","Temperatura"]
     miss = [c for c in req if c not in df.columns]
@@ -374,13 +363,12 @@ def main(parquet_path=None):
 
     seg_col = cfg.get("data",{}).get("segment_col","Segmento")
     if seg_col not in df.columns:
-        raise KeyError(f"No encuentro la columna de segmento '{seg_col}' en el parquet de evaluación.")
+        raise KeyError(f"No encuentro la columna de segmento '{seg_col}'.")
 
     segments = [s for s in df[seg_col].dropna().unique().tolist()]
     if len(segments) == 0:
         raise ValueError(f"La columna '{seg_col}' no tiene valores válidos.")
 
-    # Intentamos loggear dataset en MLflow
     if ml_enabled:
         try:
             import mlflow.data
@@ -389,15 +377,12 @@ def main(parquet_path=None):
         except Exception:
             mlflow.set_tag("eval_dataset_path", os.path.abspath(parquet_path))
 
-    # Eval por segmento
     os.makedirs(paths["eval_dir"], exist_ok=True)
-    all_preds = []
-    metrics_list = []
+    all_preds, metrics_list = [], []
 
     for seg in segments:
         df_seg = df[df[seg_col] == seg].copy()
-        if df_seg.empty:
-            continue
+        if df_seg.empty: continue
 
         if ml_enabled:
             mlflow.start_run(run_name=f"eval_segment={_suffix_from_segment(seg)}", nested=True)
@@ -405,42 +390,39 @@ def main(parquet_path=None):
 
         try:
             preds_df, metrics, roc_path = eval_segment(df_seg, seg, cfg)
-            all_preds.append(preds_df)
-            metrics_list.append(metrics)
+            all_preds.append(preds_df); metrics_list.append(metrics)
 
-            # Guardar salidas por segmento
             seg_sfx = _suffix_from_segment(seg)
             out_csv = os.path.join(paths["eval_dir"], f"preds_injection__seg={seg_sfx}.csv")
             preds_df.to_csv(out_csv, index=False, encoding="utf-8-sig")
             with open(os.path.join(paths["eval_dir"], f"metrics_injection__seg={seg_sfx}.json"), "w", encoding="utf-8") as f:
                 json.dump(metrics, f, indent=2, ensure_ascii=False)
 
-            # MLflow: métricas/artefactos por segmento
             if ml_enabled:
                 mlflow.log_metrics({
-                    "precision": metrics["precision"],
-                    "recall": metrics["recall"],
-                    "f1": metrics["f1"],
-                    "accuracy": metrics["accuracy"],
+                    "precision": metrics["precision"], "recall": metrics["recall"],
+                    "f1": metrics["f1"], "accuracy": metrics["accuracy"],
                     "roc_auc": 0.0 if np.isnan(metrics["roc_auc"]) else metrics["roc_auc"],
                     "positives_true": metrics["positives_true"],
                     "positives_pred": metrics["positives_pred"],
                     "n_eval": metrics["n_eval"],
+                    "alarm_rate": metrics["alarm_rate"],
+                    "thr_if": metrics["thr_if"],
+                })
+                mlflow.log_params({
+                    "fusion": metrics.get("fusion",""), "z_threshold": metrics.get("z_threshold", 0.0),
+                    "contamination": metrics.get("contamination", 0.0),
                 })
                 if roc_path and os.path.exists(roc_path):
                     mlflow.log_artifact(roc_path, artifact_path=f"segments/{seg_sfx}/plots")
                 mlflow.log_artifact(out_csv, artifact_path=f"segments/{seg_sfx}/eval")
                 mlflow.log_artifact(os.path.join(paths["eval_dir"], f"metrics_injection__seg={seg_sfx}.json"),
                                     artifact_path=f"segments/{seg_sfx}/eval")
-
         finally:
-            if ml_enabled:
-                mlflow.end_run()  # end child run
+            if ml_enabled: mlflow.end_run()
 
-    # Unir y exportar "global"
     if len(all_preds) > 0:
         preds_all = pd.concat(all_preds, ignore_index=True)
-        # Métricas globales (consolidando todos los segmentos)
         y_true_all = preds_all["label_next"].fillna(0).astype(int).values
         y_pred_all = preds_all["Flag_Final"].astype(int).values
         proba_all  = preds_all["proba"].astype(float).values
@@ -460,36 +442,26 @@ def main(parquet_path=None):
             "positives_true": int(np.sum(y_true_all)),
             "positives_pred": int(np.sum(y_pred_all)),
             "n_eval": int(len(y_true_all)),
+            "alarm_rate": float(np.mean(y_pred_all)) if len(y_pred_all) else 0.0,
         }
 
-        # Guardar globales
         preds_all_csv = os.path.join(paths["eval_dir"], "preds_injection__all_segments.csv")
         preds_all.to_csv(preds_all_csv, index=False, encoding="utf-8-sig")
         with open(os.path.join(paths["eval_dir"], "metrics_injection__all_segments.json"), "w", encoding="utf-8") as f:
-            json.dump({
-                "overall": metrics_all,
-                "by_segment": metrics_list
-            }, f, indent=2, ensure_ascii=False)
+            json.dump({"overall": metrics_all, "by_segment": metrics_list}, f, indent=2, ensure_ascii=False)
 
-        # Curva ROC global
         roc_all_path = None
         if fpr_all is not None and tpr_all is not None:
             plt.figure(figsize=(6,5))
             plt.plot(fpr_all, tpr_all, label=f"ROC ALL (AUC={roc_auc_all:.3f})")
             plt.plot([0,1],[0,1], linestyle="--", linewidth=1)
-            plt.xlabel("False Positive Rate")
-            plt.ylabel("True Positive Rate (Recall)")
+            plt.xlabel("False Positive Rate"); plt.ylabel("True Positive Rate (Recall)")
             plt.title("Curva ROC - Inyección (Todos los segmentos)")
-            plt.grid(True, alpha=0.3)
-            plt.legend(loc="lower right")
-            plt.tight_layout()
-            roc_all_path = os.path.join(paths["paths" if "paths" in paths else "eval_dir"], "roc_injection__all_segments.png")
-            # corregir ruta si paths mal indexado
+            plt.grid(True, alpha=0.3); plt.legend(loc="lower right"); plt.tight_layout()
+            os.makedirs(cfg["paths"]["plots_dir"], exist_ok=True)
             roc_all_path = os.path.join(cfg["paths"]["plots_dir"], "roc_injection__all_segments.png")
-            plt.savefig(roc_all_path, dpi=140)
-            plt.close()
+            plt.savefig(roc_all_path, dpi=140); plt.close()
 
-        # MLflow global
         if ml_enabled:
             mlflow.log_metrics({
                 "precision_overall": metrics_all["precision"],
@@ -500,6 +472,7 @@ def main(parquet_path=None):
                 "positives_true_overall": metrics_all["positives_true"],
                 "positives_pred_overall": metrics_all["positives_pred"],
                 "n_eval_overall": metrics_all["n_eval"],
+                "alarm_rate_overall": metrics_all["alarm_rate"],
             })
             mlflow.log_artifact(preds_all_csv, artifact_path="eval/all_segments")
             mlflow.log_artifact(os.path.join(paths["eval_dir"], "metrics_injection__all_segments.json"),
@@ -509,7 +482,6 @@ def main(parquet_path=None):
 
     if ml_enabled:
         mlflow.end_run()
-
     print("OK: evaluación por segmento completada.")
 
 if __name__ == "__main__":
