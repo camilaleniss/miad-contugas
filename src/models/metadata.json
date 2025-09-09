@@ -1,0 +1,20 @@
+{
+  "CLIENTE1": {
+    "model_path": "models/CLIENTE1.keras",
+    "features": [
+      "Volumen",
+      "Temperatura",
+      "Presion"
+    ],
+    "lookback": 24
+  },
+  "CLIENTE2": {
+    "model_path": "models/CLIENTE2.keras",
+    "features": [
+      "Volumen",
+      "Temperatura",
+      "Presion"
+    ],
+    "lookback": 24
+  }
+}
