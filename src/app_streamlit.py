@@ -266,54 +266,54 @@ with tab1:
         # Req 3 & 5: Detección de anomalías + nivel (con apoyo del LSTM)
         # ---------------------------------
         st.subheader("🚨 Detección de anomalías")
-        # model, X_scaler, y_scaler, lookback = load_model_for_client(cliente_sel)
-        # if model is None:
-        #     st.info("No se encontró un modelo entrenado para este cliente. Entrena primero con `train_lstm.py`.")
-        # else:
-        #     feats = ["Volumen","Temperatura","Presion"]
-        #     dfg2 = dfg.sort_values("Fecha").copy()
-        #     X = dfg2[feats].values
-        #     # Escala con scaler entrenado
-        #     X_scaled = X_scaler.transform(X)
-        #     Xs = []
-        #     ts_list = []
-        #     for i in range(len(X_scaled) - lookback):
-        #         Xs.append(X_scaled[i:i+lookback])
-        #         ts_list.append(dfg2.iloc[i+lookback]["Fecha"])
-        #     Xs = np.array(Xs)
+        model, X_scaler, y_scaler, lookback = load_model_for_client(cliente_sel)
+        if model is None:
+            st.info("No se encontró un modelo entrenado para este cliente. Entrena primero con `train_lstm.py`.")
+        else:
+            feats = ["Volumen","Temperatura","Presion"]
+            dfg2 = dfg.sort_values("Fecha").copy()
+            X = dfg2[feats].values
+            # Escala con scaler entrenado
+            X_scaled = X_scaler.transform(X)
+            Xs = []
+            ts_list = []
+            for i in range(len(X_scaled) - lookback):
+                Xs.append(X_scaled[i:i+lookback])
+                ts_list.append(dfg2.iloc[i+lookback]["Fecha"])
+            Xs = np.array(Xs)
 
-        #     y_pred_scaled = model.predict(Xs, verbose=0)
-        #     y_pred = y_scaler.inverse_transform(y_pred_scaled.reshape(-1,1)).ravel()
+            y_pred_scaled = model.predict(Xs, verbose=0)
+            y_pred = y_scaler.inverse_transform(y_pred_scaled.reshape(-1,1)).ravel()
 
-        #     # Alinear con valores reales (Volumen)
-        #     y_true = dfg2["Volumen"].iloc[lookback:].values
-        #     ts = pd.to_datetime(pd.Series(ts_list))
+            # Alinear con valores reales (Volumen)
+            y_true = dfg2["Volumen"].iloc[lookback:].values
+            ts = pd.to_datetime(pd.Series(ts_list))
 
-        #     resid = y_true - y_pred
-        #     # Z-score sobre residuo (rolling robusto opcional)
-        #     resid_mean = pd.Series(resid).rolling(24, min_periods=12).mean()
-        #     resid_std = pd.Series(resid).rolling(24, min_periods=12).std().replace(0, np.nan)
-        #     z = (pd.Series(resid) - resid_mean) / resid_std
-        #     z = z.fillna(0.0)
+            resid = y_true - y_pred
+            # Z-score sobre residuo (rolling robusto opcional)
+            resid_mean = pd.Series(resid).rolling(24, min_periods=12).mean()
+            resid_std = pd.Series(resid).rolling(24, min_periods=12).std().replace(0, np.nan)
+            z = (pd.Series(resid) - resid_mean) / resid_std
+            z = z.fillna(0.0)
 
-        #     anomalies = pd.DataFrame({
-        #         "Fecha": ts,
-        #         "Cliente": cliente_sel,
-        #         "Volumen_real": y_true,
-        #         "Volumen_pred": y_pred,
-        #         "Residuo": resid,
-        #         "zscore": z
-        #     })
-        #     anomalies["Nivel"] = anomalies["zscore"].apply(lambda v: categorize_anomaly(v, z_low, z_mid, z_high))
+            anomalies = pd.DataFrame({
+                "Fecha": ts,
+                "Cliente": cliente_sel,
+                "Volumen_real": y_true,
+                "Volumen_pred": y_pred,
+                "Residuo": resid,
+                "zscore": z
+            })
+            anomalies["Nivel"] = anomalies["zscore"].apply(lambda v: categorize_anomaly(v, z_low, z_mid, z_high))
 
-        #     st.plotly_chart(px.line(anomalies, x="Fecha", y=["Volumen_real","Volumen_pred"], title="Predicción vs Real"), use_container_width=True)
-        #     # Puntos de anomalía
-        #     anom_points = anomalies[anomalies["Nivel"] != ""]
-        #     if not anom_points.empty:
-        #         sc = px.scatter(anom_points, x="Fecha", y="Volumen_real", hover_data=["Nivel","zscore"], title="Anomalías detectadas (puntos)")
-        #         st.plotly_chart(sc, use_container_width=True)
+            st.plotly_chart(px.line(anomalies, x="Fecha", y=["Volumen_real","Volumen_pred"], title="Predicción vs Real"), use_container_width=True)
+            # Puntos de anomalía
+            anom_points = anomalies[anomalies["Nivel"] != ""]
+            if not anom_points.empty:
+                sc = px.scatter(anom_points, x="Fecha", y="Volumen_real", hover_data=["Nivel","zscore"], title="Anomalías detectadas (puntos)")
+                st.plotly_chart(sc, use_container_width=True)
 
-        #     st.dataframe(anomalies.tail(200), use_container_width=True)
+            st.dataframe(anomalies.tail(200), use_container_width=True)
 
 with tab2:
     st.header("👥 Resumen General de Clientes")
