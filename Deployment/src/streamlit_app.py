@@ -19,6 +19,13 @@ BASE_DIR = Path(
     r"E:\Data2\1.Data\2. POSTGRADUATE\11. MAESTRIA_MIAD\ANDES\12_Proyecto_Aplicado_Analítica_de_Datos_(PAAD)\Proyecto_Final_Caso_Contugas\06_Models\Training\model_outputs"
 )
 
+
+# Carpeta del repo "Deployment" (sube 1 nivel desde src/)
+ROOT = Path(__file__).resolve().parents[1]
+
+# 1) Carpeta de artefactos (donde están los .pkl)
+BASE_DIR = ROOT / "model_outputs"
+
 ARTIFACTS_BY_SEG = {
     "Comercial": {
         "enet":    BASE_DIR / "enet_forecast__seg=Comercial.pkl",
@@ -66,18 +73,66 @@ def load_base_data():
         return df
     return pd.DataFrame(columns=["Fecha","Presion","Temperatura","Volumen","Cliente","Segmento"])
 
+# def read_any_file(uploaded_file):
+#     name = uploaded_file.name.lower()
+#     if name.endswith(".csv"):
+#         df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
+#     elif name.endswith((".xlsx", ".xls")):
+#         df = pd.read_excel(uploaded_file)
+#     else:
+#         st.error("Formato no soportado. Sube CSV o Excel.")
+#         return None
+#     if "Fecha" in df.columns:
+#         df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True)
+#     return df
+import io
+
 def read_any_file(uploaded_file):
+    """Lee CSV/Excel desde st.file_uploader de forma robusta (no consume el buffer)."""
+    if uploaded_file is None:
+        return None
+
     name = uploaded_file.name.lower()
-    if name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
-    elif name.endswith((".xlsx", ".xls")):
-        df = pd.read_excel(uploaded_file)
+
+    # Copiamos los bytes para no consumir el buffer original
+    raw = uploaded_file.getvalue()
+    if not raw:
+        st.error("El archivo subido está vacío.")
+        return None
+    bio = io.BytesIO(raw)
+
+    if name.endswith((".xlsx", ".xls")):
+        bio.seek(0)
+        df = pd.read_excel(bio)
+    elif name.endswith(".csv"):
+        df = None
+        for enc in ("utf-8-sig", "utf-8", "latin-1"):
+            try:
+                bio.seek(0)
+                # Autodetecta ; o , como separador
+                tmp = pd.read_csv(bio, sep=None, engine="python", encoding=enc)
+                if tmp.shape[1] == 0:
+                    continue
+                df = tmp
+                break
+            except pd.errors.EmptyDataError:
+                st.error("El CSV no contiene datos.")
+                return None
+            except Exception:
+                continue
+        if df is None:
+            st.error("No se pudo leer el CSV. Verifica separador/codificación.")
+            return None
     else:
         st.error("Formato no soportado. Sube CSV o Excel.")
         return None
+
     if "Fecha" in df.columns:
         df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True)
+
+    st.caption(f"📂 Archivo cargado: **{uploaded_file.name}** — {df.shape[0]} filas, {df.shape[1]} columnas")
     return df
+
 
 def ensure_hourly(dfg: pd.DataFrame) -> pd.DataFrame:
     dfg = dfg.sort_values("Fecha").set_index("Fecha").asfreq("H")
@@ -359,167 +414,401 @@ segmento_sel = st.sidebar.selectbox(
 # --------------------------------------------------------------------------------
 # Cuerpo
 # --------------------------------------------------------------------------------
-if not df.empty and cliente_sel:
-    dfg = df[df["Cliente"]==cliente_sel].copy()
+# if not df.empty and cliente_sel:
+#     dfg = df[df["Cliente"]==cliente_sel].copy()
 
-    if "Fecha" in dfg.columns:
-        dfg["Fecha"] = pd.to_datetime(dfg["Fecha"], errors="coerce")
-        dfg = dfg.dropna(subset=["Fecha"])
+#     if "Fecha" in dfg.columns:
+#         dfg["Fecha"] = pd.to_datetime(dfg["Fecha"], errors="coerce")
+#         dfg = dfg.dropna(subset=["Fecha"])
 
-    dfg = ensure_hourly(dfg)
-    if isinstance(rango, (list, tuple)) and len(rango)==2 and rango[0] and rango[1]:
-        dfg = dfg[(dfg["Fecha"]>=pd.to_datetime(rango[0])) & (dfg["Fecha"]<=pd.to_datetime(rango[1]))]
+#     dfg = ensure_hourly(dfg)
+#     if isinstance(rango, (list, tuple)) and len(rango)==2 and rango[0] and rango[1]:
+#         dfg = dfg[(dfg["Fecha"]>=pd.to_datetime(rango[0])) & (dfg["Fecha"]<=pd.to_datetime(rango[1]))]
 
-    if dfg.empty:
-        st.info("No hay datos en el rango seleccionado.")
-    else:
-        # Históricos
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.subheader("Volumen (histórico)")
-            st.plotly_chart(
-            px.line(dfg, x="Fecha", y="Volumen", color_discrete_sequence=["seagreen"]),
-            use_container_width=True
-            )
-        with c2:
-            st.subheader("Temperatura (histórico)")
-            st.plotly_chart(
-            px.line(dfg, x="Fecha", y="Temperatura", color_discrete_sequence=["seagreen"]), 
-            use_container_width=True
-            )
-        with c3:
-            st.subheader("Presión (histórico)")
-            st.plotly_chart(
-            px.line(dfg, x="Fecha", y="Presion", color_discrete_sequence=["seagreen"]),
-            use_container_width=True
-            )
+#     if dfg.empty:
+#         st.info("No hay datos en el rango seleccionado.")
+#     else:
+#         # Volumen – barras
+#         st.subheader("📉 Volumen (histórico)")
+#         vol_plot_df = (
+#             dfg.sort_values("Fecha")[["Fecha", "Volumen"]]
+#             .dropna(subset=["Fecha", "Volumen"])
+#         )
+#         fig_vol = px.bar(
+#             vol_plot_df,
+#             x="Fecha",
+#             y="Volumen",
+#             title="Evolución del Volumen de Consumo",
+#         )
+#         fig_vol.update_traces(
+#             marker_color="#1f77b4",
+#             marker_line_width=0,
+#             hovertemplate="Fecha=%{x}<br>Volumen=%{y:.2f}<extra></extra>"
+#         )
+#         fig_vol.update_layout(
+#             xaxis_title="Fecha",
+#             yaxis_title="Volumen (m³)",
+#             hovermode="x unified",
+#             height=340,
+#             margin=dict(t=40, r=10, l=10, b=10),
+#             xaxis=dict(showgrid=False),
+#             yaxis=dict(showgrid=True, zeroline=False),
+#             showlegend=False,
+#         )
+#         st.plotly_chart(fig_vol, use_container_width=True)
 
-        st.subheader("📈 Estadísticas descriptivas (rango filtrado)")
-        stats_cols = [c for c in ["Volumen","Temperatura","Presion"] if c in dfg.columns]
-        if stats_cols:
-            st.dataframe(dfg[stats_cols].describe(percentiles=[0.25,0.5,0.75]).T, use_container_width=True)
+#         # Temperatura – área
+#         st.subheader("🌡️ Temperatura (histórico)")
+#         temp_plot_df = (
+#             dfg.sort_values("Fecha")[["Fecha", "Temperatura"]]
+#             .dropna(subset=["Fecha", "Temperatura"])
+#         )
+#         fig_temp = px.area(
+#             temp_plot_df,
+#             x="Fecha",
+#             y="Temperatura",
+#             title="Evolución de la Temperatura",
+#         )
+#         fig_temp.update_traces(
+#             line=dict(width=1.5, color="#e45756"),
+#             fill="tozeroy",
+#             hovertemplate="Fecha=%{x}<br>Temperatura=%{y:.2f}°C<extra></extra>"
+#         )
+#         fig_temp.update_layout(
+#             xaxis_title="Fecha",
+#             yaxis_title="Temperatura (°C)",
+#             hovermode="x unified",
+#             height=340,
+#             margin=dict(t=40, r=10, l=10, b=10),
+#             xaxis=dict(showgrid=False),
+#             yaxis=dict(showgrid=True, zeroline=False),
+#             showlegend=False,
+#         )
+#         st.plotly_chart(fig_temp, use_container_width=True)
 
-        st.subheader("🚨 Detección de anomalías (SSA+ENet → residuales → IForest)")
-        try:
-            seg_for_models = segmento_sel
-            if "Segmento" in dfg.columns:
-                top = dfg["Segmento"].mode()
-                if not top.empty:
-                    seg_for_models = top.iloc[0]
+#         # Presión – línea
+#         st.subheader("⚙️ Presión (histórico)")
+#         pres_plot_df = (
+#             dfg.sort_values("Fecha")[["Fecha", "Presion"]]
+#             .dropna(subset=["Fecha", "Presion"])
+#         )
+#         fig_pres = px.line(
+#             pres_plot_df,
+#             x="Fecha",
+#             y="Presion",
+#             title="Evolución de la Presión",
+#         )
+#         fig_pres.update_traces(
+#             line=dict(color="#2ca02c", width=1.5),
+#             hovertemplate="Fecha=%{x}<br>Presión=%{y:.3f} bar<extra></extra>"
+#         )
+#         fig_pres.update_layout(
+#             xaxis_title="Fecha",
+#             yaxis_title="Presión (bar)",
+#             hovermode="x unified",
+#             height=340,
+#             margin=dict(t=40, r=10, l=10, b=10),
+#             xaxis=dict(showgrid=False),
+#             yaxis=dict(showgrid=True, zeroline=False),
+#             showlegend=False,
+#         )
+#         st.plotly_chart(fig_pres, use_container_width=True)
+        
+#         try:
+#             seg_for_models = segmento_sel
+#             if "Segmento" in dfg.columns:
+#                 top = dfg["Segmento"].mode()
+#                 if not top.empty:
+#                     seg_for_models = top.iloc[0]
 
-            models = load_artifacts(seg_for_models)
+#             models = load_artifacts(seg_for_models)
 
-            with st.expander("🔎 Auditoría de artefactos (debug)"):
-                st.write({
-                    "poly.exists": models["poly"] is not None,
-                    "poly.n_features_in_": getattr(models["poly"], "n_features_in_", None) if models["poly"] is not None else None,
-                    "poly.n_output_features_": getattr(models["poly"], "n_output_features_", None) if models["poly"] is not None else None,
-                    "scaler.n_features_in_": getattr(models["scaler"], "n_features_in_", None),
-                    "enet.n_features_in_": getattr(models["enet"], "n_features_in_", None),
-                    "iforest.n_features_in_": getattr(models["iforest"], "n_features_in_", None),
-                })
-                st.caption("Los artefactos deben provenir del mismo entrenamiento (mismo subset/orden).")
+#             with st.expander("🔎 Auditoría de artefactos (debug)"):
+#                 st.write({
+#                     "poly.exists": models["poly"] is not None,
+#                     "poly.n_features_in_": getattr(models["poly"], "n_features_in_", None) if models["poly"] is not None else None,
+#                     "poly.n_output_features_": getattr(models["poly"], "n_output_features_", None) if models["poly"] is not None else None,
+#                     "scaler.n_features_in_": getattr(models["scaler"], "n_features_in_", None),
+#                     "enet.n_features_in_": getattr(models["enet"], "n_features_in_", None),
+#                     "iforest.n_features_in_": getattr(models["iforest"], "n_features_in_", None),
+#                 })
+#                 st.caption("Los artefactos deben provenir del mismo entrenamiento (mismo subset/orden).")
 
-            anomalies, thr_if = forecast_and_anomalies(dfg, models, z_threshold=float(z_thr))
+#             anomalies, thr_if = forecast_and_anomalies(dfg, models, z_threshold=float(z_thr))
 
-            # ---------- Gráfico 1: Pred vs Real ----------
-            df_plot = anomalies.rename(columns={
-                "Volumen_next": "Volumen_real",
-                "Volumen_hat":  "Volumen_pred"
-            })
-            fig = px.line(
-            df_plot.melt(id_vars="Fecha", value_vars=["Volumen_real","Volumen_pred"],
-            var_name="serie", value_name="valor"),
-            x="Fecha", y="valor", color="serie",
-            color_discrete_map={"Volumen_real": "seagreen", "Volumen_pred": "royalblue"},
-            title="Predicción vs Real (horizonte t+1)"
-            )
-            st.plotly_chart(fig, use_container_width=True)
+#             # ---------- Gráfico 1: Pred vs Real ----------
+#             df_plot = anomalies.rename(columns={
+#                 "Volumen_next": "Volumen_real",
+#                 "Volumen_hat":  "Volumen_pred"
+#             })
+#             fig = px.line(
+#             df_plot.melt(id_vars="Fecha", value_vars=["Volumen_real","Volumen_pred"],
+#             var_name="serie", value_name="valor"),
+#             x="Fecha", y="valor", color="serie",
+#             color_discrete_map={"Volumen_real": "seagreen", "Volumen_pred": "royalblue"},
+#             title="Predicción vs Real (horizonte t+1)"
+#             )
+#             st.plotly_chart(fig, use_container_width=True)
 
-            # ---------- Gráfico 2: Pred vs Real + puntos rojos fuera de banda ----------
-            subs = df_plot.dropna(subset=["Volumen_real","Volumen_pred"]).copy()
-            tol = float(tol_pct)  # 0–1  (ej. 0.10 => ±10%)
-            subs["upper"] = subs["Volumen_pred"] * (1.0 + tol)
-            subs["lower"] = subs["Volumen_pred"] * (1.0 - tol)
-            subs["out_of_band"] = ((subs["Volumen_real"] > subs["upper"]) | (subs["Volumen_real"] < subs["lower"])).astype(int)
+#             # ---------- Gráfico 2: Pred vs Real + puntos rojos fuera de banda ----------
+#             subs = df_plot.dropna(subset=["Volumen_real","Volumen_pred"]).copy()
+#             tol = float(tol_pct)  # 0–1  (ej. 0.10 => ±10%)
+#             subs["upper"] = subs["Volumen_pred"] * (1.0 + tol)
+#             subs["lower"] = subs["Volumen_pred"] * (1.0 - tol)
+#             subs["out_of_band"] = ((subs["Volumen_real"] > subs["upper"]) | (subs["Volumen_real"] < subs["lower"])).astype(int)
 
-            if and_iforest:
-                subs["out_of_band"] = (subs["out_of_band"].astype(bool) & (subs["Flag_Final"] == 1)).astype(int)
+#             if and_iforest:
+#                 subs["out_of_band"] = (subs["out_of_band"].astype(bool) & (subs["Flag_Final"] == 1)).astype(int)
 
-            opacity_lines = 0.5 if show_only_out else 1.0
+#             opacity_lines = 0.5 if show_only_out else 1.0
 
-            fig_b = go.Figure()
-            fig_b.add_trace(go.Scatter(x=subs["Fecha"], y=subs["Volumen_real"], name="Volumen_real", mode="lines",
-                                       line=dict(color="seagreen", width=1), opacity=opacity_lines))
-            fig_b.add_trace(go.Scatter(x=subs["Fecha"], y=subs["Volumen_pred"], name="Volumen_pred", mode="lines",
-                                       line=dict(color="seagreen", width=1), opacity=opacity_lines))
+#             fig_b = go.Figure()
+#             fig_b.add_trace(go.Scatter(x=subs["Fecha"], y=subs["Volumen_real"], name="Volumen_real", mode="lines",
+#                                        line=dict(color="seagreen", width=1), opacity=opacity_lines))
+#             fig_b.add_trace(go.Scatter(x=subs["Fecha"], y=subs["Volumen_pred"], name="Volumen_pred", mode="lines",
+#                                        line=dict(color="seagreen", width=1), opacity=opacity_lines))
 
-            # Solo puntos rojos (sin mostrar las bandas para no saturar el plot)
-            an = subs[subs["out_of_band"] == 1]
-            if not an.empty:
-                fig_b.add_trace(
-                    go.Scatter(
-                        x=an["Fecha"], y=an["Volumen_real"],
-                        mode="markers", name="Fuera de banda",
+#             # Solo puntos rojos (sin mostrar las bandas para no saturar el plot)
+#             an = subs[subs["out_of_band"] == 1]
+#             if not an.empty:
+#                 fig_b.add_trace(
+#                     go.Scatter(
+#                         x=an["Fecha"], y=an["Volumen_real"],
+#                         mode="markers", name="Fuera de banda",
+#                         marker=dict(color="red", size=int(marker_size)),
+#                         hovertemplate=("Fecha=%{x}<br>Real=%{y:.3f}"
+#                                        "<br>Pred=%{customdata[0]:.3f}"
+#                                        "<br>Upper=%{customdata[1]:.3f}"
+#                                        "<br>Lower=%{customdata[2]:.3f}<extra></extra>"),
+#                         customdata=np.stack([an["Volumen_pred"], an["upper"], an["lower"]], axis=1)
+#                     )
+#                 )
+
+#             fig_b.update_layout(title=f"Pred vs Real + Puntos rojos fuera de banda (±{tol*100:.1f}%)")
+#             st.plotly_chart(fig_b, use_container_width=True)
+
+#             # Exportar CSV de anomalías del gráfico de bandas (dinámicas)
+#             if not an.empty:
+#                 csv_bytes = an[["Cliente", "Fecha", "Volumen_real", "Volumen_pred", "upper", "lower", "Flag_Final", "proba_if"]].to_csv(
+#                     index=False, encoding="utf-8-sig"
+#                 ).encode("utf-8-sig")
+#                 st.download_button(
+#                     "⬇️ Descargar anomalías fuera de banda (CSV)",
+#                     data=csv_bytes,
+#                     file_name="anomalies_out_of_band.csv",
+#                     mime="text/csv",
+#                     key="dl_oob_csv"
+#                 )
+
+#             # ---------- Scatter de anomalías IForest/Z (igual que antes) ----------
+#             df_plot["Nivel"] = df_plot["proba_if"].apply(lambda p: categorize_anomaly_if(p, q_leve, q_media, q_crit))
+#             anom_points = df_plot[df_plot["Flag_Final"] == 1]
+#             if not anom_points.empty:
+#                 sc = px.scatter(
+#                     anom_points, x="Fecha", y="Volumen_real",
+#                     hover_data=["Nivel","z_abs","proba_if","resid","r_mean","r_std"],
+#                     title="Anomalías IForest/Z (puntos)"
+#                 )
+#                 st.plotly_chart(sc, use_container_width=True)
+#             else:
+#                 st.info("No se detectaron anomalías según el umbral de IForest/z.")
+
+#             # Métricas rápidas
+#             subs_err = df_plot.dropna(subset=["Volumen_real","Volumen_pred"]).copy()
+#             if not subs_err.empty:
+#                 err = subs_err["Volumen_real"].values - subs_err["Volumen_pred"].values
+#                 mae = float(np.mean(np.abs(err)))
+#                 rmse = float(np.sqrt(np.mean(err**2)))
+#                 denom = np.maximum(np.abs(subs_err["Volumen_real"].values), 1e-8)
+#                 mape = float(np.mean(np.abs(err/denom))*100.0)
+#                 st.caption(f"MAE={mae:,.3f} | RMSE={rmse:,.3f} | MAPE={mape:,.2f}%  (t+1)")
+
+#             st.dataframe(df_plot.tail(300), use_container_width=True)
+#             st.caption(
+#                 f"IForest: percentil **{1.0-IF_CONTAM:.3f}** ⇒ score ≥ **{thr_if:.3f}** (Flag_IF=1). "
+#                 f"Severidad: Leve ≥ {q_leve:.3f}, Media ≥ {q_media:.3f}, Crítica ≥ {q_crit:.3f}. "
+#                 f"(‘proba_if’ ∈ [0,1], mayor ⇒ más anómalo)"
+#             )
+
+#         except FileNotFoundError as e:
+#             st.error(str(e))
+#         except Exception as e:
+#             st.exception(e)
+
+# --- TAB 1: Histórico + Estadísticas + Anomalías ---
+tab1, tab2 = st.tabs(["📈 Histórico", "👥 Resumen de Clientes"])
+
+with tab1:
+    # Copia base y (opcional) merge con archivo subido
+    df = base_df.copy()
+    if uploaded is not None:
+        new_df = read_any_file(uploaded)
+        if new_df is not None and not new_df.empty:
+            req_cols = {"Fecha","Volumen","Temperatura","Presion","Cliente"}
+            miss = req_cols - set(new_df.columns)
+            if miss:
+                st.error(f"El archivo subido no contiene columnas requeridas: {sorted(miss)}")
+            else:
+                new_df = new_df.dropna(subset=["Fecha","Volumen","Temperatura","Presion","Cliente"])
+                if "Segmento" not in new_df.columns:
+                    new_df["Segmento"] = segmento_sel_pre
+                if merge_mode == "Reemplazar rango solapado":
+                    for c, d in new_df.groupby("Cliente"):
+                        mn, mx = d["Fecha"].min(), d["Fecha"].max()
+                        df = df[~((df["Cliente"]==c) & (df["Fecha"].between(mn, mx)))]
+                    df = pd.concat([df, new_df], ignore_index=True)
+                else:
+                    df = pd.concat([df, new_df], ignore_index=True)
+                df = df.drop_duplicates(subset=["Cliente","Fecha"]).reset_index(drop=True)
+
+    if not df.empty and cliente_sel:
+        dfg = df[df["Cliente"]==cliente_sel].copy()
+
+        # Fechas y muestreo horario
+        if "Fecha" in dfg.columns:
+            dfg["Fecha"] = pd.to_datetime(dfg["Fecha"], errors="coerce")
+            dfg = dfg.dropna(subset=["Fecha"])
+        dfg = ensure_hourly(dfg)
+
+        # Filtro por rango del sidebar
+        if isinstance(rango, (list, tuple)) and len(rango)==2 and rango[0] and rango[1]:
+            dfg = dfg[(dfg["Fecha"]>=pd.to_datetime(rango[0])) & (dfg["Fecha"]<=pd.to_datetime(rango[1]))]
+
+            # =========================
+            # 1) Gráficos históricos (apilados)
+            # =========================
+            st.subheader("📉 Volumen (histórico)")
+            fig_vol = px.line(dfg, x="Fecha", y="Volumen", color_discrete_sequence=["#1f77b4"])
+            fig_vol.update_layout(xaxis_title="Fecha", yaxis_title="Volumen (m³)", height=340)
+            st.plotly_chart(fig_vol, use_container_width=True)
+
+            st.divider()  # separador opcional
+
+            st.subheader("🌡️ Temperatura (histórico)")
+            fig_tmp = px.line(dfg, x="Fecha", y="Temperatura", color_discrete_sequence=["#e45756"])
+            fig_tmp.update_layout(xaxis_title="Fecha", yaxis_title="Temperatura (°C)", height=340)
+            st.plotly_chart(fig_tmp, use_container_width=True)
+
+            st.divider()  # separador opcional
+
+            st.subheader("⚙️ Presión (histórico)")
+            fig_prs = px.line(dfg, x="Fecha", y="Presion", color_discrete_sequence=["#2ca02c"])
+            fig_prs.update_layout(xaxis_title="Fecha", yaxis_title="Presión (bar)", height=340)
+            st.plotly_chart(fig_prs, use_container_width=True)
+
+            # ==========================================
+            # 2) Estadísticas descriptivas (rango filtro)
+            # ==========================================
+            st.subheader("📈 Estadísticas descriptivas (rango filtrado)")
+            stats_cols = [c for c in ["Volumen","Temperatura","Presion"] if c in dfg.columns]
+            if stats_cols:
+                st.dataframe(dfg[stats_cols].describe(percentiles=[0.25,0.5,0.75]).T,
+                             use_container_width=True)
+
+            # ==========================================
+            # 3) Detección de anomalías (Pred vs Real)
+            # ==========================================
+            st.subheader("🚨 Detección de anomalías")
+            try:
+                # Cargar artefactos del segmento
+                seg_for_models = segmento_sel
+                if "Segmento" in dfg.columns:
+                    top = dfg["Segmento"].mode()
+                    if not top.empty:
+                        seg_for_models = top.iloc[0]
+                models = load_artifacts(seg_for_models)
+
+                # Auditoría opcional
+                with st.expander("🔎 Auditoría de artefactos (debug)"):
+                    st.write({
+                        "poly.exists": models["poly"] is not None,
+                        "poly.n_features_in_": getattr(models["poly"], "n_features_in_", None) if models["poly"] is not None else None,
+                        "poly.n_output_features_": getattr(models["poly"], "n_output_features_", None) if models["poly"] is not None else None,
+                        "scaler.n_features_in_": getattr(models["scaler"], "n_features_in_", None),
+                        "enet.n_features_in_": getattr(models["enet"], "n_features_in_", None),
+                        "iforest.n_features_in_": getattr(models["iforest"], "n_features_in_", None),
+                    })
+
+                # Predicción y anomalías
+                anomalies, thr_if = forecast_and_anomalies(dfg, models, z_threshold=float(z_thr))
+
+                # ---- Gráfico: Pred vs Real
+                df_plot = anomalies.rename(columns={"Volumen_next":"Volumen_real", "Volumen_hat":"Volumen_pred"})
+                fig_pred = px.line(
+                    df_plot.melt(id_vars="Fecha", value_vars=["Volumen_real","Volumen_pred"],
+                                 var_name="serie", value_name="valor"),
+                    x="Fecha", y="valor", color="serie",
+                    color_discrete_map={"Volumen_real": "#1f77b4", "Volumen_pred": "#636EFA"},
+                    title="Predicción vs Real (horizonte t+1)"
+                )
+                st.plotly_chart(fig_pred, use_container_width=True)
+
+                # ---- Gráfico: Anomalías detectadas (puntos) usando bandas ±tol y Flag_Final
+                subs = df_plot.dropna(subset=["Volumen_real","Volumen_pred"]).copy()
+                tol = float(tol_pct)  # 0–1
+                subs["upper"] = subs["Volumen_pred"] * (1.0 + tol)
+                subs["lower"] = subs["Volumen_pred"] * (1.0 - tol)
+                subs["out_of_band"] = ((subs["Volumen_real"] > subs["upper"]) |
+                                       (subs["Volumen_real"] < subs["lower"])).astype(int)
+                if and_iforest:
+                    subs["out_of_band"] = (subs["out_of_band"].astype(bool) &
+                                           (subs["Flag_Final"] == 1)).astype(int)
+
+                fig_pts = go.Figure()
+                # líneas finas (opcionalmente atenuadas si solo quieres ver puntos)
+                opacity_lines = 0.5 if show_only_out else 1.0
+                fig_pts.add_trace(go.Scatter(x=subs["Fecha"], y=subs["Volumen_real"],
+                                             name="Volumen_real", mode="lines",
+                                             line=dict(width=1), opacity=opacity_lines))
+                fig_pts.add_trace(go.Scatter(x=subs["Fecha"], y=subs["Volumen_pred"],
+                                             name="Volumen_pred", mode="lines",
+                                             line=dict(width=1), opacity=opacity_lines))
+                # puntos rojos
+                an = subs[subs["out_of_band"] == 1]
+                if not an.empty:
+                    fig_pts.add_trace(go.Scatter(
+                        x=an["Fecha"], y=an["Volumen_real"], mode="markers",
+                        name="Anomalías (puntos)",
                         marker=dict(color="red", size=int(marker_size)),
                         hovertemplate=("Fecha=%{x}<br>Real=%{y:.3f}"
                                        "<br>Pred=%{customdata[0]:.3f}"
                                        "<br>Upper=%{customdata[1]:.3f}"
                                        "<br>Lower=%{customdata[2]:.3f}<extra></extra>"),
                         customdata=np.stack([an["Volumen_pred"], an["upper"], an["lower"]], axis=1)
-                    )
+                    ))
+                fig_pts.update_layout(title=f"Anomalías detectadas (puntos) — bandas ±{tol*100:.1f}%")
+                st.plotly_chart(fig_pts, use_container_width=True)
+
+                # Descarga CSV de puntos fuera de banda
+                if not an.empty:
+                    csv_bytes = an[["Cliente","Fecha","Volumen_real","Volumen_pred","upper","lower","Flag_Final","proba_if"]]\
+                                .to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+                    st.download_button("⬇️ Descargar anomalías (puntos fuera de banda)",
+                                       data=csv_bytes, file_name="anomalies_out_of_band.csv",
+                                       mime="text/csv")
+
+                # Métricas rápidas
+                subs_err = df_plot.dropna(subset=["Volumen_real","Volumen_pred"]).copy()
+                if not subs_err.empty:
+                    err  = subs_err["Volumen_real"].values - subs_err["Volumen_pred"].values
+                    mae  = float(np.mean(np.abs(err)))
+                    rmse = float(np.sqrt(np.mean(err**2)))
+                    denom = np.maximum(np.abs(subs_err["Volumen_real"].values), 1e-8)
+                    mape = float(np.mean(np.abs(err/denom))*100.0)
+                    st.caption(f"MAE={mae:,.3f} | RMSE={rmse:,.3f} | MAPE={mape:,.2f}%  (t+1)")
+
+                st.dataframe(df_plot.tail(300), use_container_width=True)
+                st.caption(
+                    f"IForest: percentil **{1.0-IF_CONTAM:.3f}** ⇒ score ≥ **{thr_if:.3f}** (Flag_IF=1). "
+                    f"Severidad (sobre proba_if): Leve ≥ {q_leve:.3f}, Media ≥ {q_media:.3f}, Crítica ≥ {q_crit:.3f}."
                 )
 
-            fig_b.update_layout(title=f"Pred vs Real + Puntos rojos fuera de banda (±{tol*100:.1f}%)")
-            st.plotly_chart(fig_b, use_container_width=True)
+            except FileNotFoundError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.exception(e)
 
-            # Exportar CSV de anomalías del gráfico de bandas (dinámicas)
-            if not an.empty:
-                csv_bytes = an[["Cliente", "Fecha", "Volumen_real", "Volumen_pred", "upper", "lower", "Flag_Final", "proba_if"]].to_csv(
-                    index=False, encoding="utf-8-sig"
-                ).encode("utf-8-sig")
-                st.download_button(
-                    "⬇️ Descargar anomalías fuera de banda (CSV)",
-                    data=csv_bytes,
-                    file_name="anomalies_out_of_band.csv",
-                    mime="text/csv",
-                    key="dl_oob_csv"
-                )
-
-            # ---------- Scatter de anomalías IForest/Z (igual que antes) ----------
-            df_plot["Nivel"] = df_plot["proba_if"].apply(lambda p: categorize_anomaly_if(p, q_leve, q_media, q_crit))
-            anom_points = df_plot[df_plot["Flag_Final"] == 1]
-            if not anom_points.empty:
-                sc = px.scatter(
-                    anom_points, x="Fecha", y="Volumen_real",
-                    hover_data=["Nivel","z_abs","proba_if","resid","r_mean","r_std"],
-                    title="Anomalías IForest/Z (puntos)"
-                )
-                st.plotly_chart(sc, use_container_width=True)
-            else:
-                st.info("No se detectaron anomalías según el umbral de IForest/z.")
-
-            # Métricas rápidas
-            subs_err = df_plot.dropna(subset=["Volumen_real","Volumen_pred"]).copy()
-            if not subs_err.empty:
-                err = subs_err["Volumen_real"].values - subs_err["Volumen_pred"].values
-                mae = float(np.mean(np.abs(err)))
-                rmse = float(np.sqrt(np.mean(err**2)))
-                denom = np.maximum(np.abs(subs_err["Volumen_real"].values), 1e-8)
-                mape = float(np.mean(np.abs(err/denom))*100.0)
-                st.caption(f"MAE={mae:,.3f} | RMSE={rmse:,.3f} | MAPE={mape:,.2f}%  (t+1)")
-
-            st.dataframe(df_plot.tail(300), use_container_width=True)
-            st.caption(
-                f"IForest: percentil **{1.0-IF_CONTAM:.3f}** ⇒ score ≥ **{thr_if:.3f}** (Flag_IF=1). "
-                f"Severidad: Leve ≥ {q_leve:.3f}, Media ≥ {q_media:.3f}, Crítica ≥ {q_crit:.3f}. "
-                f"(‘proba_if’ ∈ [0,1], mayor ⇒ más anómalo)"
-            )
-
-        except FileNotFoundError as e:
-            st.error(str(e))
-        except Exception as e:
-            st.exception(e)
+# (tab2 lo dejas como tu “👥 Resumen de Clientes”)
 
 # Footer
 st.caption("Artefactos y lógica replican el pipeline SSA→lags→(poly subset)→Scaler→ENet→residuales→IForest. "

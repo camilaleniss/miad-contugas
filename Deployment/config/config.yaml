@@ -2,7 +2,7 @@
 seed: 69069
 
 data:
-  csv_path: ./df_contugas.csv
+  csv_path: data/df_contugas.csv
   encoding: utf-8-sig
   date_col: Fecha
   client_col: Cliente
