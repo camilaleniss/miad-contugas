@@ -1,0 +1,10 @@
+digest: a209ecb8
+name: contugas_raw
+profile: '{"num_rows": 847946, "num_elements": 5087676}'
+schema: '{"mlflow_colspec": [{"type": "string", "name": "Fecha", "required": true},
+  {"type": "string", "name": "Cliente", "required": true}, {"type": "string", "name":
+  "Segmento", "required": true}, {"type": "double", "name": "Presion", "required":
+  true}, {"type": "double", "name": "Temperatura", "required": true}, {"type": "double",
+  "name": "Volumen", "required": true}]}'
+source: '{"uri": "data/df_contugas.csv"}'
+source_type: local

@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/ronaldoballesterossalguero/Documents/contugas/miad-contugas/Deployment/mlruns/639649028594396420/ee32f4e3114b46a09e89db0ff50e6712/artifacts
+end_time: 1757547497683
+entry_point_name: ''
+experiment_id: '639649028594396420'
+lifecycle_stage: active
+run_id: ee32f4e3114b46a09e89db0ff50e6712
+run_name: ssa+enetpoly2+if300_Release01
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1757547497676
+status: 3
+tags: []
+user_id: ronaldoballesterossalguero
