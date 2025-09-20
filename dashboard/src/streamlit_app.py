@@ -333,6 +333,19 @@ else:
 
 rango = st.sidebar.date_input("Rango de fechas", value=(dmin, dmax), key="rango_fechas")
 
+# # --------------------------------------------------------------------------------
+# # clientes y segmentos
+# # --------------------------------------------------------------------------------
+df = base_df.copy()
+
+clientes = sorted(df["Cliente"].astype(str).str.strip().dropna().unique().tolist()) if "Cliente" in df.columns else []
+segmentos = sorted(df["Segmento"].astype(str).str.strip().dropna().unique().tolist()) if "Segmento" in df.columns else ["Comercial","Industrial"]
+
+
+cliente_sel = st.sidebar.selectbox("Cliente", options=clientes if clientes else ["—"], index=0, key="cliente_sel")
+if not clientes and cliente_sel == "—":
+    cliente_sel = None
+
 #--------------------------------
 
 st.sidebar.markdown("---")
@@ -361,25 +374,9 @@ if uploaded is not None:
             st.rerun()
 
 
-# # --------------------------------------------------------------------------------
-# # clientes y segmentos
-# # --------------------------------------------------------------------------------
-df = base_df.copy()
 
-clientes = sorted(df["Cliente"].astype(str).str.strip().dropna().unique().tolist()) if "Cliente" in df.columns else []
-segmentos = sorted(df["Segmento"].astype(str).str.strip().dropna().unique().tolist()) if "Segmento" in df.columns else ["Comercial","Industrial"]
 
-st.sidebar.header("Selección de datos")
-cliente_sel = st.sidebar.selectbox("Cliente", options=clientes if clientes else ["—"], index=0, key="cliente_sel")
-if not clientes and cliente_sel == "—":
-    cliente_sel = None
-
-segmento_sel = st.sidebar.selectbox(
-    "Segmento (para cargar artefactos)",
-    options=segmentos,
-    index=segmentos.index(segmento_sel_pre) if segmento_sel_pre in segmentos else 0,
-    key="seg_final"
-)
+segmento_sel = segmento_sel_pre
 
 #--------------------------------
 st.sidebar.header("Detección de anomalías")
@@ -418,7 +415,7 @@ tab1, tab2, tab3 = st.tabs(["📊 Anomalías","📈 Histórico", "👥 Resumen d
 
 with tab1:
     
-
+    st.subheader(f"🔎 Cliente seleccionado: {cliente_sel}")  # <--- AÑADIDO
     if not df.empty and cliente_sel:
         dfg = df[df["Cliente"]==cliente_sel].copy()
 
@@ -458,6 +455,42 @@ with tab1:
 
                 # Predicción y anomalías
                 anomalies, thr_if = forecast_and_anomalies(dfg, models, z_threshold=float(z_thr))
+                
+                # INICIO CUADRO RESUMEN DE ANOMALIAS
+                # Clasificar severidad dinámicamente según sliders
+                anomalies["Severidad"] = anomalies["proba_if"].apply(
+                    lambda p: categorize_anomaly_if(p, q_leve=q_leve, q_media=q_media, q_critica=q_crit)
+                )
+
+                # Resumen de anomalías por severidad
+                resumen_anom = (
+                    anomalies[anomalies["Flag_Final"] == 1]  # solo anomalías finales
+                    .groupby("Severidad")
+                    .size()
+                    .reindex(["Leve", "Media", "Crítica"], fill_value=0)
+                    .reset_index(name="Cantidad")
+                )
+
+                # 🎨 Colores para cada severidad
+                colores = {"Leve": "#A3E4D7", "Media": "#F9E79F", "Crítica": "#F5B7B1"}
+
+                st.subheader("📋 Resumen de anomalías (según umbrales)")
+
+                # Mostrar como tabla con color de fondo
+                def color_severidad(val):
+                    return f"background-color: {colores.get(val, 'white')}"
+
+                st.dataframe(
+                    resumen_anom.style.applymap(color_severidad, subset=["Severidad"]),
+                    use_container_width=True
+                )
+
+                # Mostrar métricas con emojis
+                c1, c2, c3 = st.columns(3)
+                c1.metric("🟢 Leve", int(resumen_anom.loc[resumen_anom["Severidad"]=="Leve","Cantidad"].values[0]))
+                c2.metric("🟡 Media", int(resumen_anom.loc[resumen_anom["Severidad"]=="Media","Cantidad"].values[0]))
+                c3.metric("🔴 Crítica", int(resumen_anom.loc[resumen_anom["Severidad"]=="Crítica","Cantidad"].values[0]))
+                # FIN CUADRO RESUMEN DE ANOMALIAS
 
                 # ---- Gráfico: Pred vs Real
                 df_plot = anomalies.rename(columns={"Volumen_next":"Volumen_real", "Volumen_hat":"Volumen_pred"})
@@ -539,6 +572,7 @@ with tab1:
 # TAB 2: Historioco
 # -----------------------------
 with tab2:
+    st.subheader(f"🔎 Cliente seleccionado: {cliente_sel}")  # <--- AÑADIDO
     st.header("📈 Histórico")
 # =========================
 # 1) Gráficos históricos (apilados)
