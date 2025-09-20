@@ -346,12 +346,20 @@ if uploaded is not None:
             with st.spinner('Procesando...'):
                 processed_df = process_dataframe(new_df)
             
-            # Guardar el df procesado para que la app lo cargue
+            # --- CAMBIO: concatenar con datos existentes ---
             output_path = "df_contugas.csv"
+            if os.path.exists(output_path):
+                existing_df = pd.read_csv(output_path, encoding="utf-8-sig")
+                processed_df = pd.concat([existing_df, processed_df], ignore_index=True)
+                # opcional: eliminar duplicados por Cliente+Fecha
+                processed_df.drop_duplicates(subset=["Cliente","Fecha"], keep="last", inplace=True)
+            
+            # Guardar CSV actualizado
             processed_df.to_csv(output_path, index=False, encoding="utf-8-sig")
             
             st.sidebar.success(f"ETL completado. Datos guardados en {output_path}")
             st.rerun()
+
 
 # # --------------------------------------------------------------------------------
 # # clientes y segmentos
