@@ -2,6 +2,7 @@
 # app_streamlit.py — Contugas (SSA + ENet (poly opcional) + Scaler + IForest en residuales), por segmento
 
 import os
+import base64
 from pathlib import Path
 from datetime import date, timedelta
 
@@ -58,8 +59,92 @@ POLY_P_MAX = 4
 POLY_T_MAX = 4
 
 st.set_page_config(page_title="Gas Contugas - Dashboard", layout="wide")
-st.title("📊 Dashboard Para Detección de Anomalías")
-st.caption("Históricos, estadísticas, forecasting (SSA+ENet) y anomalías (IForest en residuales) — por segmento")
+
+# CSS personalizado para el sidebar
+st.markdown("""
+<style>
+    /* Sidebar background general */
+    .css-1d391kg {
+        background-color: #202030 !important;
+    }
+    
+    /* Sidebar container */
+    .css-1lcbmhc .css-1d391kg {
+        background-color: #202030 !important;
+    }
+    
+    /* Solo headers y texto general en blanco */
+    .css-1d391kg h1,
+    .css-1d391kg h2,
+    .css-1d391kg h3,
+    .css-1d391kg h4,
+    .css-1d391kg h5,
+    .css-1d391kg h6 {
+        color: #FFFFFF !important;
+    }
+    
+    /* Texto de markdown y caption en blanco */
+    .css-1d391kg .stMarkdown,
+    .css-1d391kg .stCaption {
+        color: #FFFFFF !important;
+    }
+    
+    /* Texto general del sidebar en blanco - solo elementos específicos */
+    .css-1d391kg > div:first-child p,
+    .css-1d391kg > div:first-child span:not([class*="st"]),
+    .css-1d391kg .stMarkdown p,
+    .css-1d391kg .stMarkdown span {
+        color: #FFFFFF !important;
+    }
+    
+    /* Alternative selectors for newer Streamlit versions */
+    section[data-testid="stSidebar"] {
+        background-color: #202030 !important;
+    }
+    
+    /* Solo headers en blanco para versiones nuevas */
+    section[data-testid="stSidebar"] h1,
+    section[data-testid="stSidebar"] h2,
+    section[data-testid="stSidebar"] h3,
+    section[data-testid="stSidebar"] h4,
+    section[data-testid="stSidebar"] h5,
+    section[data-testid="stSidebar"] h6 {
+        color: #FFFFFF !important;
+    }
+    
+    /* Texto de markdown en blanco para versiones nuevas */
+    section[data-testid="stSidebar"] .stMarkdown,
+    section[data-testid="stSidebar"] .stCaption {
+        color: #FFFFFF !important;
+    }
+    
+    /* Texto general en blanco para versiones nuevas - solo elementos específicos */
+    section[data-testid="stSidebar"] > div:first-child p,
+    section[data-testid="stSidebar"] > div:first-child span:not([class*="st"]),
+    section[data-testid="stSidebar"] .stMarkdown p,
+    section[data-testid="stSidebar"] .stMarkdown span {
+        color: #FFFFFF !important;
+    }
+    
+    /* Force sidebar background */
+    .stApp > div:first-child > div:first-child > div:nth-child(2) {
+        background-color: #202030 !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Logo al lado del título, alineado a la derecha
+logo_path = Path(__file__).parent / "media" / "logo_contugas.png"
+if logo_path.exists():
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.title("📊 Dashboard Para Detección de Anomalías")
+        st.caption("Históricos, estadísticas, forecasting (SSA+ENet) y anomalías (IForest en residuales) — por segmento")
+    with col2:
+        st.image(str(logo_path), width=188, use_container_width=False)
+else:
+    st.title("📊 Dashboard Para Detección de Anomalías")
+    st.caption("Históricos, estadísticas, forecasting (SSA+ENet) y anomalías (IForest en residuales) — por segmento")
 
 # --------------------------------------------------------------------------------
 # Utils
