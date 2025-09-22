@@ -448,6 +448,8 @@ if uploaded is not None:
                 processed_df = pd.concat([existing_df, processed_df], ignore_index=True)
                 # opcional: eliminar duplicados por Cliente+Fecha
                 processed_df.drop_duplicates(subset=["Cliente","Fecha"], keep="last", inplace=True)
+                processed_df.dropna(how="all", inplace=True)
+
             
             # Guardar CSV actualizado
             processed_df.to_csv(output_path, index=False, encoding="utf-8-sig")
