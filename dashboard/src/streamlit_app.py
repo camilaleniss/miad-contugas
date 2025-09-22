@@ -2,16 +2,16 @@
 # app_streamlit.py — Contugas (SSA + ENet (poly opcional) + Scaler + IForest en residuales), por segmento
 
 import os
-import base64
 from pathlib import Path
 from datetime import date, timedelta
-
+import io
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 import joblib
+from etl import process_dataframe, load_excel_with_client_column
 
 # --------------------------------------------------------------------------------
 # CONFIG rutas de artefactos: deben existir por segmento con sufijo __seg=<Segmento>.pkl
@@ -158,36 +158,32 @@ def load_base_data():
         return df
     return pd.DataFrame(columns=["Fecha","Presion","Temperatura","Volumen","Cliente","Segmento"])
 
-import io
-
 def read_any_file(uploaded_file):
     """Lee CSV/Excel desde st.file_uploader de forma robusta (no consume el buffer)."""
     if uploaded_file is None:
         return None
 
     name = uploaded_file.name.lower()
-
-    # Copiamos los bytes para no consumir el buffer original
     raw = uploaded_file.getvalue()
     if not raw:
         st.error("El archivo subido está vacío.")
         return None
+    
     bio = io.BytesIO(raw)
 
     if name.endswith((".xlsx", ".xls")):
         bio.seek(0)
-        df = pd.read_excel(bio)
+        # Usa la función de etl.py para cargar todas las hojas como clientes
+        df, _ = load_excel_with_client_column(bio)
     elif name.endswith(".csv"):
         df = None
         for enc in ("utf-8-sig", "utf-8", "latin-1"):
             try:
                 bio.seek(0)
-                # Autodetecta ; o , como separador
                 tmp = pd.read_csv(bio, sep=None, engine="python", encoding=enc)
-                if tmp.shape[1] == 0:
-                    continue
-                df = tmp
-                break
+                if tmp.shape[1] > 0:
+                    df = tmp
+                    break
             except pd.errors.EmptyDataError:
                 st.error("El CSV no contiene datos.")
                 return None
@@ -205,6 +201,7 @@ def read_any_file(uploaded_file):
 
     st.caption(f"📂 Archivo cargado: **{uploaded_file.name}** — {df.shape[0]} filas, {df.shape[1]} columnas")
     return df
+
 
 
 def ensure_hourly(dfg: pd.DataFrame) -> pd.DataFrame:
@@ -423,32 +420,27 @@ rango = st.sidebar.date_input("Rango de fechas", value=(dmin, dmax), key="rango_
 #--------------------------------
 
 st.sidebar.markdown("---")
-uploaded   = st.sidebar.file_uploader("Subir nuevas mediciones (CSV/Excel)", type=["csv","xlsx","xls"], key="file_up")
-merge_mode = st.sidebar.radio("¿Cómo usar el archivo subido?", ["Reemplazar rango solapado","Añadir/append"], index=0, key="merge_mode")
+uploaded = st.sidebar.file_uploader("Subir nuevas mediciones (CSV/Excel)", type=["csv","xlsx","xls"], key="file_up")
+
+if uploaded is not None:
+    if st.sidebar.button("Ejecutar ETL en archivo subido"):
+        new_df = read_any_file(uploaded)
+        if new_df is not None and not new_df.empty:
+            st.sidebar.info("Ejecutando ETL... por favor espere.")
+            with st.spinner('Procesando...'):
+                processed_df = process_dataframe(new_df)
+            
+            # Guardar el df procesado para que la app lo cargue
+            output_path = "df_contugas.csv"
+            processed_df.to_csv(output_path, index=False, encoding="utf-8-sig")
+            
+            st.sidebar.success(f"ETL completado. Datos guardados en {output_path}")
+            st.rerun()
 
 # # --------------------------------------------------------------------------------
 # # clientes y segmentos
 # # --------------------------------------------------------------------------------
 df = base_df.copy()
-if uploaded is not None:
-    new_df = read_any_file(uploaded)
-    if new_df is not None and not new_df.empty:
-        req_cols = {"Fecha","Volumen","Temperatura","Presion","Cliente"}
-        miss = req_cols - set(new_df.columns)
-        if miss:
-            st.error(f"El archivo subido no contiene columnas requeridas: {sorted(miss)}")
-        else:
-            new_df = new_df.dropna(subset=["Fecha","Volumen","Temperatura","Presion","Cliente"])
-            if "Segmento" not in new_df.columns:
-                new_df["Segmento"] = segmento_sel_pre
-            if merge_mode == "Reemplazar rango solapado":
-                for c, d in new_df.groupby("Cliente"):
-                    mn, mx = d["Fecha"].min(), d["Fecha"].max()
-                    df = df[~((df["Cliente"]==c) & (df["Fecha"].between(mn, mx)))]
-                df = pd.concat([df, new_df], ignore_index=True)
-            else:
-                df = pd.concat([df, new_df], ignore_index=True)
-            df = df.drop_duplicates(subset=["Cliente","Fecha"]).reset_index(drop=True)
 
 clientes = sorted(df["Cliente"].astype(str).str.strip().dropna().unique().tolist()) if "Cliente" in df.columns else []
 segmentos = sorted(df["Segmento"].astype(str).str.strip().dropna().unique().tolist()) if "Segmento" in df.columns else ["Comercial","Industrial"]
@@ -501,27 +493,7 @@ tab1, tab2, tab3 = st.tabs(["📊 Anomalías","📈 Histórico", "👥 Resumen d
 # -----------------------------
 
 with tab1:
-    # Copia base y (opcional) merge con archivo subido
-    df = base_df.copy()
-    if uploaded is not None:
-        new_df = read_any_file(uploaded)
-        if new_df is not None and not new_df.empty:
-            req_cols = {"Fecha","Volumen","Temperatura","Presion","Cliente"}
-            miss = req_cols - set(new_df.columns)
-            if miss:
-                st.error(f"El archivo subido no contiene columnas requeridas: {sorted(miss)}")
-            else:
-                new_df = new_df.dropna(subset=["Fecha","Volumen","Temperatura","Presion","Cliente"])
-                if "Segmento" not in new_df.columns:
-                    new_df["Segmento"] = segmento_sel_pre
-                if merge_mode == "Reemplazar rango solapado":
-                    for c, d in new_df.groupby("Cliente"):
-                        mn, mx = d["Fecha"].min(), d["Fecha"].max()
-                        df = df[~((df["Cliente"]==c) & (df["Fecha"].between(mn, mx)))]
-                    df = pd.concat([df, new_df], ignore_index=True)
-                else:
-                    df = pd.concat([df, new_df], ignore_index=True)
-                df = df.drop_duplicates(subset=["Cliente","Fecha"]).reset_index(drop=True)
+    
 
     if not df.empty and cliente_sel:
         dfg = df[df["Cliente"]==cliente_sel].copy()
