@@ -148,8 +148,8 @@ else:
 # Utils
 # --------------------------------------------------------------------------------
 def load_base_data():
-    default_path = "df_contugas.csv"
-    if os.path.exists(default_path):
+    default_path = ROOT / "df_contugas.csv"
+    if default_path.exists():
         df = pd.read_csv(default_path, encoding="utf-8-sig")
         if "Fecha" in df.columns:
             df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True)
@@ -203,6 +203,7 @@ def read_any_file(uploaded_file):
 
 
 def ensure_hourly(dfg: pd.DataFrame) -> pd.DataFrame:
+    dfg = dfg.drop_duplicates(subset=["Fecha"], keep="last")
     dfg = dfg.sort_values("Fecha").set_index("Fecha").asfreq("H")
     cols = [c for c in ["Presion","Temperatura","Volumen"] if c in dfg.columns]
     if cols:
@@ -442,7 +443,7 @@ if uploaded is not None:
                 processed_df = process_dataframe(new_df)
             
             # --- CAMBIO: concatenar con datos existentes ---
-            output_path = "df_contugas.csv"
+            output_path = ROOT / "df_contugas.csv"
             if os.path.exists(output_path):
                 existing_df = pd.read_csv(output_path, encoding="utf-8-sig")
                 processed_df = pd.concat([existing_df, processed_df], ignore_index=True)
