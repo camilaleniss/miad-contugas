@@ -129,6 +129,32 @@ st.markdown("""
     .stApp > div:first-child > div:first-child > div:nth-child(2) {
         background-color: #202030 !important;
     }
+    
+    /* Fix button visibility - make button background darker gray and text white */
+    .stButton > button {
+        background-color: #39394E !important;
+        color: #FFFFFF !important;
+        border: 1px solid #606060 !important;
+    }
+    
+    .stButton > button:hover {
+        background-color: #505050 !important;
+        color: #FFFFFF !important;
+        border: 1px solid #707070 !important;
+    }
+    
+    /* Specific fix for sidebar buttons */
+    section[data-testid="stSidebar"] .stButton > button {
+        background-color: #39394E !important;
+        color: #FFFFFF !important;
+        border: 1px solid #606060 !important;
+    }
+    
+    section[data-testid="stSidebar"] .stButton > button:hover {
+        background-color: #282838 !important;
+        color: #FFFFFF !important;
+        border: 1px solid #707070 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 # Logo al lado del título, alineado a la derecha
@@ -435,7 +461,7 @@ st.sidebar.markdown("---")
 uploaded = st.sidebar.file_uploader("Subir nuevas mediciones (CSV/Excel)", type=["csv","xlsx","xls"], key="file_up")
 
 if uploaded is not None:
-    if st.sidebar.button("Ejecutar ETL en archivo subido"):
+    if st.sidebar.button("Subir archivo"):
         new_df = read_any_file(uploaded)
         if new_df is not None and not new_df.empty:
             st.sidebar.info("Ejecutando ETL... por favor espere.")
